@@ -1,0 +1,13 @@
+lamzfs — third-party attribution
+
+lamzfs vendors the parsing core of:
+
+  rzfs (the MIT-elected half of its GPL-2.0-OR-MIT dual license)
+  License: MIT
+
+The vendored portions retain that license (per-file SPDX headers mark them); new
+lamzfs code is licensed MIT OR Apache-2.0 (see LICENSE-MIT, LICENSE-APACHE).
+
+`rzfs` is dual-licensed GPL-2.0 OR MIT; lamzfs elects and vendors under MIT only.
+The on-disk format is read clean-room from the permissive modern ZFS on-disk spec,
+not from CDDL OpenZFS source.
