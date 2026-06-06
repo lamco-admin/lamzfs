@@ -36,7 +36,7 @@ const BLKPTR_SIZE: usize = 128;
 /// Read logical block `blkid` of `dnode`, descending its indirect tree. Returns
 /// `None` for a hole (an absent pointer at any level), which the caller treats as
 /// zeros. `order` is the pool's byte order (from the rooting block pointer).
-fn read_dnode_block<R: BlockRead>(
+pub(crate) fn read_dnode_block<R: BlockRead>(
     members: &mut [PoolMember<R>],
     topo: &Topology,
     dnode: &Dnode,

@@ -447,8 +447,11 @@ impl BlockPointerEmbedded {
         let compression = CompressionType::try_from(compression)?;
 
         ////////////////////////////////
-        // Decode sizes. Already in bytes.
-        let logical_size = (flags & BlockPointerEmbedded::LOGICAL_SIZE_MASK) as u32;
+        // Decode sizes. Already in bytes. NOTE (lamzfs fix): ZFS BPE lsize/psize
+        // are stored biased by -1 (BPE_GET_LSIZE/PSIZE add 1); upstream rzfs
+        // omitted the +1, which made embedded blocks one byte short. See
+        // lamzfs-dev PORTING-NOTES.
+        let logical_size = ((flags & BlockPointerEmbedded::LOGICAL_SIZE_MASK) as u32) + 1;
         let logical_size = match usize::try_from(logical_size) {
             Ok(v) => v,
             Err(_) => return Err(BlockPointerDecodeError::LogicalSizeTooLarge { logical_size }),
@@ -457,7 +460,7 @@ impl BlockPointerEmbedded {
         let physical_size = usize::from(
             ((flags >> BlockPointerEmbedded::PHYSICAL_SIZE_SHIFT)
                 & BlockPointerEmbedded::PHYSICAL_SIZE_MASK_DOWN_SHIFTED) as u8,
-        );
+        ) + 1;
 
         ////////////////////////////////
         // Check that physical size is within embedded payload length.

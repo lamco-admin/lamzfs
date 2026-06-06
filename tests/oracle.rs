@@ -95,7 +95,6 @@ fn dataset_path(fx: &Value) -> Vec<String> {
 }
 
 #[test]
-#[ignore = "MOS object directory is a fat ZAP; fat-ZAP decode is the next increment (micro-ZAP + the full MOS/DSL/dataset/ZPL walk are wired and reach this point)"]
 fn single_lz4_read_dir_lists_catalog() {
     let (mut zfs, fx) = import("single_lz4");
     let owned = dataset_path(&fx);
