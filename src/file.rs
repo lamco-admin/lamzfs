@@ -33,6 +33,13 @@ pub(crate) fn with_decoder<'b, T>(
 /// On-disk block-pointer size (used as the indirect-block fan stride).
 const BLKPTR_SIZE: usize = 128;
 
+/// Hard ceiling on a dnode's indirection levels. ZFS never exceeds ~7
+/// (`DN_MAX_LEVELS`); a larger value is corrupt or hostile. Capping it both
+/// bounds the descent loop and keeps the shift exponents below 64 (a `u64`
+/// shift `>= 64` panics in debug, wraps in release — neither is acceptable on
+/// attacker-controlled metadata). SPEC-LAMZFS §2.5.
+const DN_MAX_LEVELS: u8 = 16;
+
 /// Read logical block `blkid` of `dnode`, descending its indirect tree. Returns
 /// `None` for a hole (an absent pointer at any level), which the caller treats as
 /// zeros. `order` is the pool's byte order (from the rooting block pointer).
@@ -47,13 +54,31 @@ pub(crate) fn read_dnode_block<R: BlockRead>(
     if levels == 0 {
         return Ok(None);
     }
+    if levels > DN_MAX_LEVELS {
+        return Err(Error::Inconsistent {
+            token: "dnode_levels",
+            where_: Location::Dnode { obj: 0 },
+        });
+    }
     let ptrs = dnode.pointers();
     // Entries per indirect block = 2^(indirect_block_shift - 7), since a block
     // pointer is 128 = 2^7 bytes.
     let epb_shift = u32::from(dnode.indirect_block_shift).saturating_sub(7);
+    // Guard every shift below against a >= 64 exponent (panics in debug, wraps
+    // in release): the top-level shift `epb_shift * (levels-1)` is the largest,
+    // so if it and `epb_shift` (the mask) both fit, every per-level shift does.
+    let top_exp = match epb_shift.checked_mul(u32::from(levels - 1)) {
+        Some(t) if t < 64 && epb_shift < 64 => t,
+        _ => {
+            return Err(Error::Inconsistent {
+                token: "dnode_indshift",
+                where_: Location::Dnode { obj: 0 },
+            })
+        }
+    };
     let mask = (1u64 << epb_shift) - 1;
 
-    let top_idx = (blkid >> (epb_shift * u32::from(levels - 1))) as usize;
+    let top_idx = (blkid >> top_exp) as usize;
     let Some(Some(top)) = ptrs.get(top_idx) else {
         return Ok(None); // out of range or a hole at the top level
     };
@@ -116,7 +141,10 @@ pub(crate) fn read_dnode_range<R: BlockRead>(
     let mut out = vec![0u8; len];
     let mut filled = 0usize;
     while filled < len {
-        let pos = off + filled as u64;
+        let pos = off.checked_add(filled as u64).ok_or(Error::Inconsistent {
+            token: "range_overflow",
+            where_: Location::Dnode { obj: 0 },
+        })?;
         let blkid = pos / dbsz as u64;
         let within = (pos % dbsz as u64) as usize;
         let want = core::cmp::min(dbsz - within, len - filled);

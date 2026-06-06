@@ -30,6 +30,11 @@ const LABEL_RESERVE: u64 = 4 * 1024 * 1024;
 /// in these.
 const SECTOR_SHIFT: u32 = 9;
 
+/// Largest valid vdev `ashift` (ZFS `ASHIFT_MAX`, 16 → 64 KiB sectors). A config
+/// claiming more is corrupt or hostile; rejecting it keeps the raidz geometry
+/// shifts (`>> (ashift - 9)`, `>> ashift`) below the 64-bit overflow boundary.
+const ASHIFT_MAX: u8 = 16;
+
 /// The pool's single top-level vdev, expressed as indices into the imported
 /// member set. v0.1 supports a single leaf or a mirror.
 pub(crate) enum Topology {
@@ -182,7 +187,9 @@ fn raidz_map(
         token: "raidz_geom",
         where_: Location::Vdev { guid: 0 },
     };
-    if dcols <= nparity || ashift < 9 {
+    // ashift is bounded to ZFS's valid range so `>> (ash - 9)` and `>> ash`
+    // below cannot reach a >= 64 exponent (panic/wrap on a hostile config).
+    if dcols <= nparity || !(9..=ASHIFT_MAX).contains(&ashift) {
         return Err(geom());
     }
     let ash = u32::from(ashift);
@@ -376,5 +383,25 @@ mod tests {
     fn read_order_single_and_mirror() {
         assert_eq!(Topology::Single(2).read_order(), &[2]);
         assert_eq!(Topology::Mirror(vec![1, 3, 5]).read_order(), &[1, 3, 5]);
+    }
+
+    #[test]
+    fn raidz_map_rejects_hostile_geometry() {
+        let dva = Dva {
+            allocated: 8,
+            offset: 1024,
+            is_gang: false,
+            vdev: 0,
+        };
+        // ashift past ASHIFT_MAX (would drive `>> (ash - 9)` toward a >= 64
+        // exponent) is refused, not allowed to panic/wrap.
+        assert!(raidz_map(&dva, 200, 3, 1, 4096).is_err());
+        // Below the 9-bit sector floor.
+        assert!(raidz_map(&dva, 8, 3, 1, 4096).is_err());
+        // Degenerate width: data columns <= parity columns.
+        assert!(raidz_map(&dva, 12, 1, 1, 4096).is_err());
+        // A sane raidz1 width yields columns with exactly one parity column.
+        let cols = raidz_map(&dva, 12, 3, 1, 4096).unwrap();
+        assert_eq!(cols.iter().filter(|c| c.parity).count(), 1);
     }
 }

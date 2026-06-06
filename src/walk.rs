@@ -54,14 +54,13 @@ pub(crate) fn read_object_dnode<R: BlockRead>(
     objnum: u64,
     order: EndianOrder,
 ) -> Result<Dnode> {
-    let buf = read_dnode_range(
-        members,
-        topo,
-        dnode_array,
-        objnum * DNODE_SIZE,
-        DNODE_SIZE as usize,
-        order,
-    )?;
+    // `objnum` can be a raw ZAP value (a DSL object number), so guard the
+    // byte-offset multiply against wrap on a hostile value.
+    let byte_off = objnum.checked_mul(DNODE_SIZE).ok_or(Error::Inconsistent {
+        token: "dnode_obj_overflow",
+        where_: Location::Dnode { obj: objnum },
+    })?;
+    let buf = read_dnode_range(members, topo, dnode_array, byte_off, DNODE_SIZE as usize, order)?;
     with_decoder(&buf, order, Dnode::from_decoder)
         .map_err(|_| Error::Inconsistent {
             token: "dnode_decode",
@@ -240,7 +239,11 @@ fn collect_chunks(
         token: "zap_array_chunk",
         where_: Location::Zap { obj: 0 },
     };
-    let mut out = Vec::with_capacity(length);
+    // `length` is attacker-influenced (value_int_size * value_length); the chunk
+    // chain can yield at most `nchunks * data_per_chunk` bytes, so reserve the
+    // smaller of the two rather than trust a declared multi-MiB length.
+    let cap = length.min(nchunks.saturating_mul(ZapLeafChunkData::ZAP_LEAF_DATA_SIZE));
+    let mut out = Vec::with_capacity(cap);
     let mut next = Some(start);
     let mut guard = 0usize;
     while out.len() < length {

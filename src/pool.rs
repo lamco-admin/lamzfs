@@ -28,6 +28,11 @@ const L0_UBERBLOCK_SECTOR: u64 = L0_UBERBLOCK_BYTE >> 9;
 const UBERBLOCK_ARRAY_SIZE: usize = 128 * 1024;
 /// `VDEV_UBERBLOCK_SHIFT` floor: an uberblock slot is at least 1 KiB.
 const UBERBLOCK_SHIFT_MIN: u8 = 10;
+/// `MAX_UBERBLOCK_SHIFT` ceiling: ZFS caps an uberblock slot at 8 KiB regardless
+/// of `ashift`. The slot size is `clamp(ashift, MIN, MAX)` — keeping the ceiling
+/// both matches ZFS's offsets for large-ashift pools and bounds `1 << shift`
+/// against a hostile `ashift` (a `usize` shift `>= 64` panics).
+const UBERBLOCK_SHIFT_MAX: u8 = 13;
 
 /// An imported pool with its active uberblock and resolved topology. The
 /// uberblock's `ptr` roots the MOS.
@@ -197,7 +202,7 @@ fn select_uberblock<R: BlockRead>(
     ashift: u8,
     sha: &mut Sha256,
 ) -> Result<UberBlock> {
-    let shift = ashift.max(UBERBLOCK_SHIFT_MIN);
+    let shift = ashift.clamp(UBERBLOCK_SHIFT_MIN, UBERBLOCK_SHIFT_MAX);
     let slot = 1usize << shift;
     let count = UBERBLOCK_ARRAY_SIZE / slot;
     let mut buf = vec![0u8; slot];
