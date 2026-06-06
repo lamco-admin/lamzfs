@@ -153,15 +153,22 @@ fn gzip_decode(_src: &[u8], _lsize: usize) -> Result<Vec<u8>> {
 }
 
 /// ZFS zstd: an 8-byte `zfs_zstdhdr` (BE 32-bit compressed length, then a packed
-/// BE 32-bit version/level word), then a standard zstd frame.
+/// version/level word), then a **magicless** zstd frame (OpenZFS omits the 4-byte
+/// frame magic on disk — the version lives in the header). Prepend the magic so a
+/// standard zstd decoder accepts it.
 #[cfg(feature = "zstd")]
 fn zstd_decode(src: &[u8], lsize: usize) -> Result<Vec<u8>> {
     use ruzstd::io::Read as _;
+    const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
     let bad = |token| Error::BadCompression { comp: 16, token };
     let hdr = src.get(..8).ok_or_else(|| bad("zstd_no_hdr"))?;
     let clen = u32::from_be_bytes(hdr[..4].try_into().unwrap()) as usize;
     let frame = src.get(8..8 + clen).ok_or_else(|| bad("zstd_short"))?;
-    let mut dec = ruzstd::decoding::StreamingDecoder::new(frame).map_err(|_| bad("zstd_frame"))?;
+    let mut framed = Vec::with_capacity(4 + frame.len());
+    framed.extend_from_slice(&ZSTD_MAGIC);
+    framed.extend_from_slice(frame);
+    let mut dec = ruzstd::decoding::StreamingDecoder::new(framed.as_slice())
+        .map_err(|_| bad("zstd_frame"))?;
     let mut dst = vec![0u8; lsize];
     dec.read_exact(&mut dst).map_err(|_| bad("zstd_decode"))?;
     // A trailing byte would mean lsize was understated.

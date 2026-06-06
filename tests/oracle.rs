@@ -148,7 +148,31 @@ fn assert_files_byte_exact(name: &str) {
 }
 
 #[test]
-#[ignore = "file size needs the SA_ATTRS registry/layout parse (modern ZPL files store a variable-length DACL, so the SA header size + attr order are dynamic); resolve + dnode read + block read are wired, only exact sizing remains"]
 fn single_lz4_files_read_byte_exact() {
     assert_files_byte_exact("single_lz4");
+}
+
+#[test]
+fn single_off_files_read_byte_exact() {
+    assert_files_byte_exact("single_off");
+}
+
+#[test]
+fn single_gzip_files_read_byte_exact() {
+    assert_files_byte_exact("single_gzip");
+}
+
+#[test]
+fn single_lzjb_files_read_byte_exact() {
+    assert_files_byte_exact("single_lzjb");
+}
+
+#[test]
+fn single_zstd_files_read_byte_exact() {
+    assert_files_byte_exact("single_zstd");
+}
+
+#[test]
+fn mirror_lz4_files_read_byte_exact() {
+    assert_files_byte_exact("mirror_lz4");
 }

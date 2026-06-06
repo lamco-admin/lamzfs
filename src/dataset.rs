@@ -146,12 +146,14 @@ pub(crate) fn resolve_path<R: BlockRead>(
 
 /// SA (System Attributes) bonus magic (`0x2F505A`).
 const SA_MAGIC: u32 = 0x002F_505A;
-/// Byte offset of the `ZPL_SIZE` attribute within the SA data for the standard
-/// ZPL regular-file layout, whose stored order (per `zdb`) is uid(8), gid(8),
-/// atime(16), mtime(16), ctime(16), crtime(16), gen(8), mode(8), then size:
-/// 8+8+16+16+16+16+8+8 = 96. (Parsing the SA_ATTRS registry/layouts for
-/// arbitrary layouts is a later refinement.)
-const SA_SIZE_OFFSET_STD: usize = 96;
+/// Byte offset of `ZPL_SIZE` within the SA data. ZFS `zfs_mknode` writes znode
+/// attributes in a fixed creation order whose first two are always `ZPL_MODE`
+/// (8 bytes) then `ZPL_SIZE` — verified against the on-disk SA LAYOUTS (layout 2
+/// = [MODE, SIZE, GEN, UID, GID, …]). So `SIZE` is at SA-data offset 8 for every
+/// file/dir/symlink layout, regardless of the variable-length DACL that follows.
+/// (A general SA_ATTRS layout walk is a later refinement; this fixed offset is
+/// correct for any stock ZFS-created file.)
+const SA_SIZE_OFFSET_STD: usize = 8;
 
 /// Extract a regular file's logical size from its SA bonus buffer. v0.1 assumes
 /// the standard ZPL attribute layout (the only one a stock `/boot` file uses);
