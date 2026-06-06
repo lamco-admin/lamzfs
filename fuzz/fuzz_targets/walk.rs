@@ -33,6 +33,15 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
 
+    // Enumerate datasets (bounded DSL walk), then exercise a few.
+    if let Ok(datasets) = zfs.datasets() {
+        for ds in datasets.iter().take(8) {
+            let ds_ref: Vec<&str> = ds.iter().map(String::as_str).collect();
+            let _ = zfs.read_dir(&ds_ref, &[]);
+        }
+    }
+    let _ = zfs.child_datasets(&[]);
+
     // The root dataset's ZPL root directory.
     let Ok(entries) = zfs.read_dir(&[], &[]) else {
         return;

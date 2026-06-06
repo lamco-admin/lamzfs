@@ -89,6 +89,39 @@ pub(crate) fn open_dataset<R: BlockRead>(
     })
 }
 
+/// Names of the immediate child datasets under `parent` (the child-directory
+/// components selecting a DSL directory; empty = the pool root dataset). Internal
+/// datasets (`$ORIGIN`, `$MOS`, …) are filtered out. The child-directory ZAP maps
+/// each child's name to its DSL directory object.
+pub(crate) fn child_dataset_names<R: BlockRead>(
+    members: &mut [PoolMember<R>],
+    topo: &Topology,
+    mos: &Dnode,
+    order: EndianOrder,
+    parent: &[&str],
+) -> Result<Vec<String>> {
+    let objdir = read_object_dnode(members, topo, mos, MOS_OBJECT_DIRECTORY, order)?;
+    let mut dir_obj =
+        zap_lookup(members, topo, &objdir, "root_dataset", order)?.ok_or(Error::NotFound {
+            component: "root_dataset",
+        })?;
+    for name in parent {
+        let dir = dsl_dir(members, topo, mos, dir_obj, order)?;
+        let child_zap = read_object_dnode(members, topo, mos, dir.child_directory_zap_obj, order)?;
+        dir_obj = zap_lookup(members, topo, &child_zap, name, order)?.ok_or(Error::NotFound {
+            component: "dataset",
+        })?;
+    }
+    let dir = dsl_dir(members, topo, mos, dir_obj, order)?;
+    let child_zap = read_object_dnode(members, topo, mos, dir.child_directory_zap_obj, order)?;
+    let names = zap_entries(members, topo, &child_zap, order)?
+        .into_iter()
+        .map(|(name, _obj)| name)
+        .filter(|name| !name.starts_with('$'))
+        .collect();
+    Ok(names)
+}
+
 /// The dataset's ZPL root directory object number (from the master node's `ROOT`).
 pub(crate) fn root_dir_obj<R: BlockRead>(
     members: &mut [PoolMember<R>],

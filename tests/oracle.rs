@@ -155,6 +155,33 @@ fn single_lz4_read_dir_lists_catalog() {
         .is_empty());
 }
 
+#[test]
+fn single_lz4_enumerates_datasets() {
+    let (mut zfs, _fx) = import("single_lz4");
+    // Pool layout: lamzt_single_lz4 (root) / BOOT / BOOT/test.
+    let all = zfs.datasets().unwrap();
+    assert!(all.contains(&Vec::<String>::new()), "root dataset present");
+    assert!(
+        all.iter().any(|d| d == &["BOOT"]),
+        "BOOT dataset present, got {all:?}"
+    );
+    assert!(
+        all.iter().any(|d| d == &["BOOT", "test"]),
+        "BOOT/test dataset present, got {all:?}"
+    );
+    // No internal ($ORIGIN/$MOS) datasets leak through.
+    assert!(
+        all.iter().all(|d| d.iter().all(|c| !c.starts_with('$'))),
+        "no internal datasets, got {all:?}"
+    );
+    // Immediate children of the root include BOOT (and only real datasets).
+    let kids = zfs.child_datasets(&[]).unwrap();
+    assert!(
+        kids.contains(&"BOOT".to_string()),
+        "root child BOOT, got {kids:?}"
+    );
+}
+
 /// Every file in the MANIFEST reads back byte-for-byte against its kernel-
 /// produced SHA-256 — the headline oracle: contiguous, multi-block (big.bin),
 /// nested (loader/entries/test.conf), and holey (sparse) files.

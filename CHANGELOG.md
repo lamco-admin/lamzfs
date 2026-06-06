@@ -28,8 +28,10 @@ UEFI bootloaders. Read-only by construction — no write path, no `BlockWrite`.
 - **Decompression**: `off`, `zle`, `lzjb`, `lz4`, `gzip`, and `zstd` (OpenZFS
   magicless frames), each behind a Cargo feature.
 - **Checksums**: scalar Fletcher-2/4 and SHA-256 block verification.
-- **Public API**: `Zfs::import`, `pool_guid` / `pool_name` / `txg` /
-  `member_count`, `read_dir`, and `read`, over the `BlockRead` byte-source trait.
+- **Public API** over the `BlockRead` byte-source trait: `Zfs::import`,
+  `pool_guid` / `pool_name` / `txg` / `member_count`, dataset enumeration
+  (`datasets` / `child_datasets`), and dataset-scoped access — `read_dir` (any
+  directory), `stat`, `exists`, `read` (full), and `read_at` (ranged).
 - A `zfsdump` example and three `cargo-fuzz` harnesses (`import`, `walk`, `path`).
 
 ### Notes

@@ -156,6 +156,48 @@ impl<R: BlockRead> Zfs<R> {
         self.members.len()
     }
 
+    /// The immediate child datasets under `parent` (the child-directory
+    /// components selecting a dataset; empty = the pool root). Internal datasets
+    /// (`$ORIGIN`, …) are omitted.
+    pub fn child_datasets(&mut self, parent: &[&str]) -> core::result::Result<Vec<String>, Error> {
+        dataset::child_dataset_names(
+            &mut self.members,
+            &self.pool.topology,
+            &self.pool.mos_dnode,
+            self.pool.order,
+            parent,
+        )
+    }
+
+    /// Every dataset in the pool, as its path components under the pool root
+    /// (the root dataset is the empty path `[]`). Breadth-first, bounded by
+    /// [`MAX_DATASETS`] and [`MAX_DATASET_DEPTH`] so a crafted DSL tree cannot
+    /// drive unbounded work (SPEC-LAMZFS §2.5). A subtree whose enumeration
+    /// errors is skipped rather than aborting the whole listing.
+    pub fn datasets(&mut self) -> core::result::Result<Vec<Vec<String>>, Error> {
+        let mut out: Vec<Vec<String>> = alloc::vec![Vec::new()];
+        let mut queue: Vec<Vec<String>> = alloc::vec![Vec::new()];
+        while let Some(parent) = queue.pop() {
+            if out.len() >= MAX_DATASETS || parent.len() >= MAX_DATASET_DEPTH {
+                continue;
+            }
+            let parent_ref: Vec<&str> = parent.iter().map(String::as_str).collect();
+            let Ok(children) = self.child_datasets(&parent_ref) else {
+                continue;
+            };
+            for child in children {
+                if out.len() >= MAX_DATASETS {
+                    break;
+                }
+                let mut path = parent.clone();
+                path.push(child);
+                out.push(path.clone());
+                queue.push(path);
+            }
+        }
+        Ok(out)
+    }
+
     /// List a directory within a dataset. `dataset_path` is the child-directory
     /// components under the pool root selecting the dataset (e.g.
     /// `["BOOT", "ubuntu_x1"]`); `dir_path` is the directory within that
@@ -355,3 +397,10 @@ impl<R: BlockRead> Zfs<R> {
 /// holey file); this cap refuses the allocation rather than letting it abort the
 /// boot (mirrors lamboot's `MAX_BOOT_FILE_BYTES`). (SPEC-LAMZFS §2.5.)
 pub const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Upper bound on datasets returned by [`Zfs::datasets`] — a crafted DSL tree
+/// cannot drive an unbounded enumeration (SPEC-LAMZFS §2.5).
+pub const MAX_DATASETS: usize = 256;
+
+/// Upper bound on dataset nesting depth walked by [`Zfs::datasets`].
+pub const MAX_DATASET_DEPTH: usize = 16;
