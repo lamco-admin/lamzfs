@@ -9,8 +9,9 @@ use crate::{
     block_read::{read_exact, BlockRead, PoolMember},
     checksum::{Sha256, Sha256Implementation},
     error::{Error, LabelReason, Location, Result},
-    phys::{LabelNvPairs, NvList, UberBlock},
+    phys::{Dnode, EndianOrder, LabelNvPairs, NvList, UberBlock},
     vdev::Topology,
+    walk::read_objset,
 };
 
 /// Byte offset of the L0 NvPairs region from the start of a leaf device:
@@ -35,6 +36,12 @@ pub(crate) struct ImportedPool {
     pub pool_name: String,
     pub topology: Topology,
     pub uberblock: UberBlock,
+    /// The Meta Object Set's meta-dnode (the MOS dnode array), read from the
+    /// active uberblock's block pointer. Roots the DSL walk.
+    pub mos_dnode: Dnode,
+    /// The pool's byte order (from the rooting block pointer), used for every
+    /// subsequent objset/dnode/ZAP decode.
+    pub order: EndianOrder,
 }
 
 /// Import the pool from its member device(s): decode member 0's config nvlist,
@@ -67,11 +74,17 @@ pub(crate) fn import<R: BlockRead>(members: &mut [PoolMember<R>]) -> Result<Impo
 
     let uberblock = select_uberblock(&mut members[0], ashift, &mut sha)?;
 
+    // Read the MOS rooted at the active uberblock, in the pool's byte order.
+    let order = uberblock.ptr.order();
+    let mos = read_objset(members, &topology, &uberblock.ptr, order)?;
+
     Ok(ImportedPool {
         pool_guid,
         pool_name,
         topology,
         uberblock,
+        mos_dnode: mos.dnode,
+        order,
     })
 }
 

@@ -5,7 +5,7 @@
 
 use std::io::Read as _;
 
-use lamzfs::{BlockRead, PoolMember, Zfs};
+use lamzfs::{BlockRead, EntryKind, PoolMember, Zfs};
 use serde_json::Value;
 
 struct Mem(Vec<u8>);
@@ -84,4 +84,36 @@ fn mirror_imports_all_members() {
     let (zfs, fx) = import("mirror_lz4");
     assert_eq!(zfs.pool_guid(), guid_of(&fx));
     assert_eq!(zfs.member_count(), 2);
+}
+
+/// The child-directory components of the dataset name under the pool root, e.g.
+/// `lamzt_single_lz4/BOOT/test` becomes `[BOOT, test]`.
+fn dataset_path(fx: &Value) -> Vec<String> {
+    let full = fx["dataset"].as_str().unwrap();
+    let (_pool, rest) = full.split_once('/').unwrap();
+    rest.split('/').map(String::from).collect()
+}
+
+#[test]
+#[ignore = "MOS object directory is a fat ZAP; fat-ZAP decode is the next increment (micro-ZAP + the full MOS/DSL/dataset/ZPL walk are wired and reach this point)"]
+fn single_lz4_read_dir_lists_catalog() {
+    let (mut zfs, fx) = import("single_lz4");
+    let owned = dataset_path(&fx);
+    let path: Vec<&str> = owned.iter().map(String::as_str).collect();
+    let entries = zfs.read_dir(&path).unwrap();
+    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    for expected in [
+        "vmlinuz-6.1.0-test",
+        "initrd.img-6.1.0-test",
+        "os-release",
+        "big.bin",
+        "loader",
+        "EFI",
+    ] {
+        assert!(names.contains(&expected), "missing {expected} in {names:?}");
+    }
+    let by = |n: &str| entries.iter().find(|e| e.name == n).unwrap().clone();
+    assert_eq!(by("loader").kind, EntryKind::Directory);
+    assert_eq!(by("big.bin").kind, EntryKind::Regular);
+    assert_eq!(by("vmlinuz").kind, EntryKind::Symlink);
 }

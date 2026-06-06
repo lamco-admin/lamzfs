@@ -61,6 +61,7 @@ vendored!(arch, checksum, compression, phys, util);
 mod block_read;
 mod cksum;
 mod compress;
+mod dataset;
 mod error;
 mod file;
 mod path;
@@ -68,11 +69,41 @@ mod pool;
 mod vdev;
 mod walk;
 
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 
 pub use block_read::{BlockRead, PoolMember};
 pub use error::{Error, LabelReason, Location};
 pub use path::Path;
+
+/// The kind of a directory entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    Regular,
+    Directory,
+    Symlink,
+    Other,
+}
+
+/// A directory entry: a decoded name, its kind, and its object number within the
+/// selected dataset.
+#[derive(Debug, Clone)]
+pub struct DirEntry {
+    pub name: String,
+    pub kind: EntryKind,
+    pub object_id: u64,
+}
+
+/// ZPL packs the file type in the high bits of a directory-entry value and the
+/// object number in the low 48 bits.
+fn dirent_kind(value: u64) -> EntryKind {
+    match value >> 60 {
+        4 => EntryKind::Directory,
+        8 => EntryKind::Regular,
+        10 => EntryKind::Symlink,
+        _ => EntryKind::Other,
+    }
+}
+const DIRENT_OBJ_MASK: u64 = (1 << 48) - 1;
 
 /// An imported, read-only ZFS pool with one active dataset presented as a
 /// single-rooted filesystem. Built by [`Zfs::import`].
@@ -108,6 +139,34 @@ impl<R: BlockRead> Zfs<R> {
     /// Member count (1 for a single disk, N for a mirror).
     pub fn member_count(&self) -> usize {
         self.members.len()
+    }
+
+    /// List the root directory of the dataset named by `dataset_path` — child
+    /// directory components under the pool root (e.g. `["BOOT", "ubuntu_x1"]`,
+    /// the `DatasetSelector::Name` case). Walks the MOS + DSL to the dataset's
+    /// object set, then its ZPL master node and root directory.
+    pub fn read_dir(
+        &mut self,
+        dataset_path: &[&str],
+    ) -> core::result::Result<Vec<DirEntry>, Error> {
+        let order = self.pool.order;
+        let ds = dataset::open_dataset(
+            &mut self.members,
+            &self.pool.topology,
+            &self.pool.mos_dnode,
+            order,
+            dataset_path,
+        )?;
+        let root = dataset::root_dir_obj(&mut self.members, &self.pool.topology, &ds, order)?;
+        let entries = dataset::list_dir(&mut self.members, &self.pool.topology, &ds, root, order)?;
+        Ok(entries
+            .into_iter()
+            .map(|(name, value)| DirEntry {
+                name,
+                kind: dirent_kind(value),
+                object_id: value & DIRENT_OBJ_MASK,
+            })
+            .collect())
     }
 }
 
