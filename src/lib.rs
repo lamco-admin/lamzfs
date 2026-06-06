@@ -62,9 +62,11 @@ mod block_read;
 mod cksum;
 mod compress;
 mod error;
+mod file;
 mod path;
 mod pool;
 mod vdev;
+mod walk;
 
 use alloc::vec::Vec;
 
