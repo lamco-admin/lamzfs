@@ -63,6 +63,7 @@ mod cksum;
 mod compress;
 mod error;
 mod path;
+mod vdev;
 
 pub use block_read::{BlockRead, PoolMember};
 pub use error::{Error, LabelReason, Location};
