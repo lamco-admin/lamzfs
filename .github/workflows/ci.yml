@@ -10,7 +10,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  MSRV: "1.85"
+  MSRV: "1.87"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -82,3 +82,16 @@ jobs:
         with:
           tool: cargo-deny
       - run: cargo deny check
+
+  # Build the fuzz harnesses so they cannot bit-rot against the library API.
+  # (Running the fuzzer itself is a manual / scheduled task, not a PR gate.)
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - run: cargo fuzz build

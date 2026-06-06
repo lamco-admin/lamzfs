@@ -1,0 +1,41 @@
+# lamzfs fuzz targets (cargo-fuzz). Not published; isolated workspace so it is
+# never pulled into the library's build/deny graph.
+[package]
+name = "lamzfs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.lamzfs]
+path = ".."
+
+[[bin]]
+name = "import"
+path = "fuzz_targets/import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "walk"
+path = "fuzz_targets/walk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "path"
+path = "fuzz_targets/path.rs"
+test = false
+doc = false
+bench = false
+
+# Keep this crate out of the parent's (absent) workspace and self-contained.
+[workspace]

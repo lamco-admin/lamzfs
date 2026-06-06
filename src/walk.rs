@@ -60,7 +60,14 @@ pub(crate) fn read_object_dnode<R: BlockRead>(
         token: "dnode_obj_overflow",
         where_: Location::Dnode { obj: objnum },
     })?;
-    let buf = read_dnode_range(members, topo, dnode_array, byte_off, DNODE_SIZE as usize, order)?;
+    let buf = read_dnode_range(
+        members,
+        topo,
+        dnode_array,
+        byte_off,
+        DNODE_SIZE as usize,
+        order,
+    )?;
     with_decoder(&buf, order, Dnode::from_decoder)
         .map_err(|_| Error::Inconsistent {
             token: "dnode_decode",

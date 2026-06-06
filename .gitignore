@@ -1,6 +1,12 @@
 /target
 Cargo.lock.bak
 
+# cargo-fuzz build + run artifacts (the harnesses are committed; outputs are not)
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/Cargo.lock
+
 # editor / OS noise
 **/*.rs.bk
 .idea/

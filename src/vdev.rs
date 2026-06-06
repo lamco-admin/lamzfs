@@ -245,7 +245,14 @@ fn raidz1_read_columns<R: BlockRead>(
             let byte = LABEL_RESERVE.checked_add(col.offset)?;
             let member = members.get_mut(mi)?;
             let mut buf = vec![0u8; col.size];
-            read_exact(&mut member.reader, byte, &mut buf, u64::from(vdev), "io_raidz").ok()?;
+            read_exact(
+                &mut member.reader,
+                byte,
+                &mut buf,
+                u64::from(vdev),
+                "io_raidz",
+            )
+            .ok()?;
             Some(buf)
         })
         .collect()
@@ -282,7 +289,11 @@ fn raidz1_assemble(
 /// Reconstruct raidz column `target` as parity XOR the other present columns
 /// (raidz1: parity is column 0). `None` if parity or another needed column is
 /// absent — more than the recoverable one is missing.
-fn raidz1_reconstruct(cols: &[RaidzCol], colbufs: &[Option<Vec<u8>>], target: usize) -> Option<Vec<u8>> {
+fn raidz1_reconstruct(
+    cols: &[RaidzCol],
+    colbufs: &[Option<Vec<u8>>],
+    target: usize,
+) -> Option<Vec<u8>> {
     let parity = colbufs.first()?.as_deref()?;
     let size = cols.get(target)?.size;
     let mut rebuilt = vec![0u8; size];

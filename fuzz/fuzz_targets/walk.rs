@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! Tree-walk fuzzing: import a single-member pool, list the root dataset's
+//! filesystem, read every small regular file, and try each entry name as both a
+//! nested dataset (the DSL walk) and a file path (the resolve + SA-size + block
+//! read + decompression path). A global budget bounds the work so a malicious
+//! ZAP or dnode tree cannot turn one input into unbounded effort.
+//!
+//! Seed from a real pool for depth (see `fuzz/README.md`).
+#![no_main]
+
+use libfuzzer_sys::fuzz_target;
+
+use lamzfs::{BlockRead, EntryKind, PoolMember, Zfs};
+
+struct Mem(Vec<u8>);
+
+impl BlockRead for Mem {
+    type Error = ();
+    fn read_at(&mut self, off: u64, buf: &mut [u8]) -> Result<(), ()> {
+        let off = usize::try_from(off).map_err(|_| ())?;
+        let end = off.checked_add(buf.len()).ok_or(())?;
+        buf.copy_from_slice(self.0.get(off..end).ok_or(())?);
+        Ok(())
+    }
+}
+
+fuzz_target!(|data: &[u8]| {
+    let device_size_bytes = data.len() as u64;
+    let Ok(mut zfs) = Zfs::import(vec![PoolMember {
+        reader: Mem(data.to_vec()),
+        device_size_bytes,
+    }]) else {
+        return;
+    };
+
+    // The root dataset's ZPL root directory.
+    let Ok(entries) = zfs.read_dir(&[]) else {
+        return;
+    };
+
+    let mut budget = 2048u32;
+    for e in entries.iter().take(512) {
+        if budget == 0 {
+            break;
+        }
+        budget -= 1;
+        let name = e.name.as_str();
+        match e.kind {
+            // Read the file (the resolve + size + block-read + decompress path).
+            EntryKind::Regular | EntryKind::Symlink | EntryKind::Other => {
+                let _ = zfs.read(&[], &[name]);
+            }
+            // A child directory name is also a plausible child *dataset* name —
+            // exercise open_dataset's DSL directory walk.
+            EntryKind::Directory => {
+                let _ = zfs.read_dir(&[name]);
+                let _ = zfs.read(&[name], &[name]);
+            }
+        }
+    }
+});

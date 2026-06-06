@@ -16,7 +16,9 @@
 //! Read-only by construction: no write path, no `BlockWrite`, no mutating call
 //! site.
 
-#![cfg_attr(not(test), no_std)]
+// `no_std` unless the `std` feature is on (which adds `impl std::error::Error`)
+// or we are building the test harness (the oracle tests use `std`).
+#![cfg_attr(not(any(feature = "std", test)), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
 // Orchestration is built milestone by milestone; intermediate modules expose
@@ -47,13 +49,24 @@ macro_rules! vendored {
                 missing_docs,
                 unused,
                 unreachable_pub,
-                elided_lifetimes_in_paths
+                elided_lifetimes_in_paths,
+                // The vendored subtree gates its SIMD paths behind feature names
+                // (sha256-avx2, fletcher4-avx512f, …) that lamzfs does not
+                // declare — those accelerators require `unsafe`, which the crate
+                // forbids, so the gates are permanently-false and only the scalar
+                // path compiles. Silence the resulting unknown-feature lint here.
+                unexpected_cfgs
             )]
             mod $m;
         )+
     };
 }
-vendored!(arch, checksum, compression, phys, util);
+// NOTE: the rzfs `arch` module (x86 CPUID-based SIMD dispatch) is intentionally
+// NOT compiled. Its only consumers are the SIMD checksum paths, which lamzfs
+// gates off (scalar-only, see the features note in Cargo.toml). It also calls
+// raw `__cpuid` intrinsics whose `unsafe`-ness varies by rustc version — leaving
+// it out keeps `#![forbid(unsafe_code)]` robust across toolchains.
+vendored!(checksum, compression, phys, util);
 
 // ---------------------------------------------------------------------------
 // New lamzfs orchestration (MIT OR Apache-2.0) — full lint set applies.
@@ -224,9 +237,8 @@ impl<R: BlockRead> Zfs<R> {
     }
 }
 
-/// Largest file [`Zfs::read_file`] will allocate up front. A hostile dnode can
+/// Largest file [`Zfs::read`] will allocate up front. A hostile dnode can
 /// declare a multi-GiB logical size while occupying almost no real blocks (a
 /// holey file); this cap refuses the allocation rather than letting it abort the
-/// boot (mirrors lamboot's `MAX_BOOT_FILE_BYTES`). The streaming `read_file_at`
-/// path is unaffected. (SPEC-LAMZFS §2.5.)
+/// boot (mirrors lamboot's `MAX_BOOT_FILE_BYTES`). (SPEC-LAMZFS §2.5.)
 pub const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;

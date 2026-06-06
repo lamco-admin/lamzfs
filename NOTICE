@@ -23,11 +23,12 @@ docs/PORTING-NOTES.md for the audit record.
 
 WHAT IS VENDORED (MIT)
 ----------------------
-The `src/phys/`, `src/checksum/`, `src/compression/`, `src/util/`, and
-`src/arch/` subtrees (the format decoders, scalar checksums, and the LZJB
-decompressor) are ported from rzfs `lib/src`. The std-only `userspace` block
-device layer, the SIMD-accelerated checksum paths, and the `exe`/`fuse`/`module`
-crates are not vendored.
+The `src/phys/`, `src/checksum/`, `src/compression/`, and `src/util/` subtrees
+(the format decoders, scalar checksums, and the LZJB decompressor) are ported
+from rzfs `lib/src`. The std-only `userspace` block device layer, the
+SIMD-accelerated checksum paths, the `arch` CPUID dispatch, and the
+`exe`/`fuse`/`module` crates are not vendored — lamzfs is scalar-only and
+`#![forbid(unsafe_code)]`.
 
 WHAT IS NEW lamzfs CODE (MIT OR Apache-2.0)
 -------------------------------------------

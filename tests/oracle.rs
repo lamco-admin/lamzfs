@@ -219,6 +219,10 @@ fn raidz1_degraded_reconstructs() {
         let data = zfs
             .read(&ds, &comps)
             .unwrap_or_else(|e| panic!("degraded read {path}: {e:?}"));
-        assert_eq!(sha256_hex(&data), want, "degraded reconstruct mismatch for {path}");
+        assert_eq!(
+            sha256_hex(&data),
+            want,
+            "degraded reconstruct mismatch for {path}"
+        );
     }
 }

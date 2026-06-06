@@ -19,7 +19,7 @@ homepage = "https://lamco.ai/products/lamboot/"
 readme = "README.md"
 keywords = ["zfs", "filesystem", "no_std", "uefi", "bootloader"]
 categories = ["filesystem", "embedded", "no-std"]
-rust-version = "1.85"
+rust-version = "1.87"
 documentation = "https://docs.rs/lamzfs"
 include = [
     "src/**/*.rs",
@@ -62,24 +62,14 @@ gzip = ["dep:miniz_oxide"]
 lzjb = []
 mirror = []
 
-# Vendored rzfs SIMD-accelerated checksum features. Declared so `cfg(feature =
-# ...)` in the vendored subtree resolves cleanly, but NEVER enabled: lamzfs
-# compiles scalar Fletcher-2/4 + SHA-256 for portability (SPEC-LAMZFS §5.1).
-fletcher2-sse2 = []
-fletcher2-ssse3 = []
-fletcher2-avx2 = []
-fletcher2-avx512f = []
-fletcher2-avx512bw = []
-fletcher4-sse2 = []
-fletcher4-ssse3 = []
-fletcher4-avx2 = []
-fletcher4-avx512f = []
-fletcher4-avx512bw = []
-sha256-bmi = []
-sha256-ssse3 = []
-sha256-avx = []
-sha256-avx2 = []
-sha256-sha = []
+# NOTE: the vendored rzfs subtree gates SIMD-accelerated checksums behind feature
+# names like `sha256-avx2` / `fletcher4-avx512f`. lamzfs deliberately does NOT
+# declare them: every accelerator path requires `unsafe`, which the crate forbids
+# (`#![forbid(unsafe_code)]`), so only the scalar Fletcher-2/4 + SHA-256 path is
+# ever compiled (SPEC-LAMZFS §5.1). Declaring them would make `--all-features`
+# (used by CI *and* docs.rs) try to build the `unsafe` paths and fail the gate.
+# The now-unknown `cfg(feature = ...)` gates are permanently-false; the
+# unexpected_cfgs lint is silenced in the `vendored!` wrapper (src/lib.rs).
 
 [package.metadata.docs.rs]
 all-features = true
