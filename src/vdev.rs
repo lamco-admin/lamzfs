@@ -17,7 +17,7 @@ use crate::{
     cksum::verify_block,
     compress::decompress,
     error::{Error, Location, Result},
-    phys::BlockPointer,
+    phys::{BlockPointer, BlockPointerRegular, Dva},
 };
 
 /// Bytes reserved at the front of every leaf vdev before allocatable space:
@@ -37,14 +37,24 @@ pub(crate) enum Topology {
     Single(usize),
     /// A mirror: every child holds the same data; read any healthy child.
     Mirror(Vec<usize>),
+    /// A single-parity RAID-Z: data is striped across `children` with one parity
+    /// column per row; reconstruct a missing/bad column by XOR.
+    RaidZ1 {
+        /// Member indices of the raidz columns, in column order.
+        children: Vec<usize>,
+        /// The vdev sector shift (raidz geometry is in `1 << ashift` sectors).
+        ashift: u8,
+    },
 }
 
 impl Topology {
-    /// Member indices that physically hold a DVA's data, in read-try order.
+    /// Member indices that physically hold a DVA's data, in read-try order
+    /// (single + mirror only; raidz takes the dedicated column path).
     fn read_order(&self) -> &[usize] {
         match self {
             Topology::Single(idx) => core::slice::from_ref(idx),
             Topology::Mirror(children) => children,
+            Topology::RaidZ1 { .. } => &[],
         }
     }
 }
@@ -88,6 +98,10 @@ pub(crate) fn read_block_pointer<R: BlockRead>(
                     token: "bp_bad_psize",
                     where_: Location::Mos,
                 });
+            }
+            // RAID-Z stripes data across columns — a dedicated assembly path.
+            if let Topology::RaidZ1 { children, ashift } = topo {
+                return raidz1_read(members, children, *ashift, r, psize, lsize);
             }
             let mut last = Error::Inconsistent {
                 token: "bp_no_readable_copy",
@@ -138,6 +152,145 @@ pub(crate) fn read_block_pointer<R: BlockRead>(
             Err(last)
         }
     }
+}
+
+/// One column of a RAID-Z row map.
+struct RaidzCol {
+    devidx: usize,
+    offset: u64,
+    size: usize,
+    parity: bool,
+}
+
+/// Compute the RAID-Z column layout for a DVA (the `vdev_raidz_map_alloc`
+/// geometry): which child holds each data/parity column, at what per-child byte
+/// offset and size. `psize` is the *data* size; parity columns are added.
+fn raidz_map(
+    dva: &Dva,
+    ashift: u8,
+    dcols: u64,
+    nparity: u64,
+    psize: usize,
+) -> Result<Vec<RaidzCol>> {
+    let geom = || Error::Inconsistent {
+        token: "raidz_geom",
+        where_: Location::Vdev { guid: 0 },
+    };
+    if dcols <= nparity || ashift < 9 {
+        return Err(geom());
+    }
+    let ash = u32::from(ashift);
+    let secsize = 1u64 << ash;
+    // The DVA offset is in 512-byte sectors; convert to ashift-sized sectors.
+    let b = dva.offset >> (ash - 9);
+    // Data sectors, rounded UP: a sub-sector physical block (e.g. 512 B on an
+    // ashift=12 vdev) still occupies one whole raidz data sector.
+    let s = ((psize as u64) + secsize - 1) >> ash;
+    if s == 0 {
+        return Err(geom());
+    }
+    let f = b % dcols;
+    let o = (b / dcols) << ash;
+    let q = s / (dcols - nparity);
+    let r = s - q * (dcols - nparity);
+    let bc = if r == 0 { 0 } else { r + nparity };
+    let acols = if q == 0 { bc } else { dcols };
+    let mut cols = Vec::with_capacity(acols as usize);
+    for c in 0..acols {
+        let col = f + c;
+        let (devidx, coff) = if col >= dcols {
+            ((col - dcols) as usize, o + secsize)
+        } else {
+            (col as usize, o)
+        };
+        let size = if c < bc {
+            (q + 1) * secsize
+        } else {
+            q * secsize
+        };
+        cols.push(RaidzCol {
+            devidx,
+            offset: coff,
+            size: size as usize,
+            parity: c < nparity,
+        });
+    }
+    Ok(cols)
+}
+
+/// Assemble a RAID-Z block's physical (pre-decompression) bytes by reading and
+/// concatenating its data columns (the healthy path — every column present).
+fn raidz1_assemble<R: BlockRead>(
+    members: &mut [PoolMember<R>],
+    children: &[usize],
+    ashift: u8,
+    dva: &Dva,
+    psize: usize,
+) -> Result<Vec<u8>> {
+    let oob = || Error::Inconsistent {
+        token: "raidz_col_oob",
+        where_: Location::Vdev { guid: 0 },
+    };
+    let cols = raidz_map(dva, ashift, children.len() as u64, 1, psize)?;
+    let mut data = Vec::with_capacity(psize);
+    for col in &cols {
+        if col.parity {
+            continue;
+        }
+        let mi = *children.get(col.devidx).ok_or_else(oob)?;
+        let member = members.get_mut(mi).ok_or_else(oob)?;
+        let byte = LABEL_RESERVE.checked_add(col.offset).ok_or_else(oob)?;
+        let mut buf = vec![0u8; col.size];
+        read_exact(
+            &mut member.reader,
+            byte,
+            &mut buf,
+            u64::from(dva.vdev),
+            "io_raidz",
+        )?;
+        data.extend_from_slice(&buf);
+    }
+    if data.len() < psize {
+        return Err(Error::Inconsistent {
+            token: "raidz_short",
+            where_: Location::Vdev { guid: 0 },
+        });
+    }
+    data.truncate(psize);
+    Ok(data)
+}
+
+/// Read a RAID-Z1 block pointer: for each DVA copy, assemble its data columns and
+/// verify the checksum, returning the first copy that verifies, decompressed.
+fn raidz1_read<R: BlockRead>(
+    members: &mut [PoolMember<R>],
+    children: &[usize],
+    ashift: u8,
+    r: &BlockPointerRegular,
+    psize: usize,
+    lsize: usize,
+) -> Result<Vec<u8>> {
+    let mut last = Error::Inconsistent {
+        token: "raidz_no_copy",
+        where_: Location::Vdev { guid: 0 },
+    };
+    for dva in r.dvas.iter().flatten() {
+        match raidz1_assemble(members, children, ashift, dva, psize) {
+            Ok(raw) => match verify_block(
+                r.checksum_type,
+                r.order,
+                &raw,
+                &r.checksum_value,
+                u64::from(dva.vdev),
+                dva.offset,
+            ) {
+                Ok(()) => return decompress(r.compression, &raw, lsize),
+                Err(e) => last = e,
+            },
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
 }
 
 #[cfg(test)]

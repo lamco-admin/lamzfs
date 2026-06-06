@@ -176,3 +176,15 @@ fn single_zstd_files_read_byte_exact() {
 fn mirror_lz4_files_read_byte_exact() {
     assert_files_byte_exact("mirror_lz4");
 }
+
+#[test]
+fn raidz1_imports_all_members() {
+    let (zfs, fx) = import("raidz1_lz4");
+    assert_eq!(zfs.pool_guid(), guid_of(&fx));
+    assert_eq!(zfs.member_count(), 3);
+}
+
+#[test]
+fn raidz1_lz4_files_read_byte_exact() {
+    assert_files_byte_exact("raidz1_lz4");
+}

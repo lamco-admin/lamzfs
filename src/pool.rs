@@ -120,7 +120,22 @@ fn build_topology<R: BlockRead>(
             }
             Ok(Topology::Mirror(idx))
         }
-        "raidz" => Err(Error::UnsupportedTopology("topo_raidz")),
+        "raidz" => {
+            let nparity = nv_u64(vtree, "nparity").unwrap_or(1);
+            if nparity != 1 {
+                return Err(Error::UnsupportedTopology("topo_raidz_multiparity"));
+            }
+            let ashift = u8::try_from(nv_u64(vtree, "ashift")?).unwrap_or(9);
+            let children = nv_child_guids(vtree)?;
+            let mut idx = Vec::with_capacity(children.len());
+            for guid in children {
+                idx.push(find_member_by_guid(members, guid, sha)?);
+            }
+            Ok(Topology::RaidZ1 {
+                children: idx,
+                ashift,
+            })
+        }
         "draid" => Err(Error::UnsupportedTopology("topo_draid")),
         _ => Err(Error::UnsupportedTopology("topo_unknown")),
     }
