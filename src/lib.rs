@@ -63,11 +63,51 @@ mod cksum;
 mod compress;
 mod error;
 mod path;
+mod pool;
 mod vdev;
+
+use alloc::vec::Vec;
 
 pub use block_read::{BlockRead, PoolMember};
 pub use error::{Error, LabelReason, Location};
 pub use path::Path;
+
+/// An imported, read-only ZFS pool with one active dataset presented as a
+/// single-rooted filesystem. Built by [`Zfs::import`].
+pub struct Zfs<R: BlockRead> {
+    members: Vec<PoolMember<R>>,
+    pool: pool::ImportedPool,
+}
+
+impl<R: BlockRead> Zfs<R> {
+    /// Import the pool from its member device(s): read the vdev label, build the
+    /// topology (single / mirror), and select the active uberblock. Rejects an
+    /// out-of-scope topology or a missing/corrupt label with a typed error.
+    pub fn import(mut members: Vec<PoolMember<R>>) -> core::result::Result<Self, Error> {
+        let pool = pool::import(&mut members)?;
+        Ok(Self { members, pool })
+    }
+
+    /// The pool GUID (stable per pool) — surfaced as the volume `uuid()`.
+    pub fn pool_guid(&self) -> u64 {
+        self.pool.pool_guid
+    }
+
+    /// The pool name (e.g. `bpool`).
+    pub fn pool_name(&self) -> &str {
+        &self.pool.pool_name
+    }
+
+    /// The active uberblock's transaction group.
+    pub fn txg(&self) -> u64 {
+        self.pool.uberblock.txg
+    }
+
+    /// Member count (1 for a single disk, N for a mirror).
+    pub fn member_count(&self) -> usize {
+        self.members.len()
+    }
+}
 
 /// Largest file [`Zfs::read_file`] will allocate up front. A hostile dnode can
 /// declare a multi-GiB logical size while occupying almost no real blocks (a

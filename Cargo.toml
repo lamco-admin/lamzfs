@@ -37,6 +37,13 @@ lz4_flex = { version = "0.11", default-features = false, features = ["safe-decod
 ruzstd = { version = "0.8", default-features = false, optional = true }
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"], optional = true }
 
+[dev-dependencies]
+# Oracle tests: decompress the committed .img.zst fixtures, hash file contents,
+# and read the MANIFEST. All test-only (not shipped).
+ruzstd = "0.8"
+sha2 = "0.10"
+serde_json = "1"
+
 [lib]
 # The vendored rzfs decoders carry hundreds of doc examples written against the
 # upstream `rzfs::` crate path; they are not lamzfs's public API and do not
