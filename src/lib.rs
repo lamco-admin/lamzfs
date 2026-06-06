@@ -21,10 +21,6 @@
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
-// Orchestration is built milestone by milestone; intermediate modules expose
-// items their consumers land in a later milestone. Lifted at M14 (release prep)
-// once every module is wired — tracked in lamzfs-dev/docs/PORTING-NOTES.md.
-#![allow(dead_code)]
 
 extern crate alloc;
 
@@ -77,7 +73,6 @@ mod compress;
 mod dataset;
 mod error;
 mod file;
-mod path;
 mod pool;
 mod vdev;
 mod walk;
@@ -86,7 +81,6 @@ use alloc::{string::String, vec::Vec};
 
 pub use block_read::{BlockRead, PoolMember};
 pub use error::{Error, LabelReason, Location};
-pub use path::Path;
 
 /// The kind of a directory entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
