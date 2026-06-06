@@ -33,6 +33,13 @@ include = [
 [dependencies]
 # Dependencies are added with the implementation (all permissive, upstream-cleared).
 
+[lib]
+# The vendored rzfs decoders carry hundreds of doc examples written against the
+# upstream `rzfs::` crate path; they are not lamzfs's public API and do not
+# compile here. lamzfs is validated by unit tests, the zpool-oracle fixtures, and
+# fuzzing (SPEC-LAMZFS §6), not by doctests.
+doctest = false
+
 [features]
 default = []
 std = []
@@ -75,5 +82,20 @@ missing_errors_doc = "allow"
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
 wildcard_imports = "deny"
-unwrap_used = "warn"
-expect_used = "warn"
+
+# lamzfs parses on-disk binary structures: numeric casting between
+# u8/u16/u32/u64/usize is pervasive (byte offsets, DVA fields, shift math).
+cast_lossless = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+# Doc comments reference on-disk ZFS names in prose (bpool, rpool, DVA, ZAP,
+# dnode, objset, uberblock, …); backticking every one is noise.
+doc_markdown = "allow"
+# Field/var names mirror on-disk ZFS names; not ours to rename.
+similar_names = "allow"
+unreadable_literal = "allow"
+match_same_arms = "allow"
+
+# (unwrap_used / expect_used intentionally not enabled: the library read path is
+# unwrap-free by construction; fixture tests use unwrap on known-good inputs.)

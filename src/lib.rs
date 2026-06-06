@@ -19,6 +19,10 @@
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
+// Orchestration is built milestone by milestone; intermediate modules expose
+// items their consumers land in a later milestone. Lifted at M14 (release prep)
+// once every module is wired — tracked in lamzfs-dev/docs/PORTING-NOTES.md.
+#![allow(dead_code)]
 
 extern crate alloc;
 
@@ -50,3 +54,21 @@ macro_rules! vendored {
     };
 }
 vendored!(arch, checksum, compression, phys, util);
+
+// ---------------------------------------------------------------------------
+// New lamzfs orchestration (MIT OR Apache-2.0) — full lint set applies.
+// ---------------------------------------------------------------------------
+mod block_read;
+mod error;
+mod path;
+
+pub use block_read::{BlockRead, PoolMember};
+pub use error::{Error, LabelReason, Location};
+pub use path::Path;
+
+/// Largest file [`Zfs::read_file`] will allocate up front. A hostile dnode can
+/// declare a multi-GiB logical size while occupying almost no real blocks (a
+/// holey file); this cap refuses the allocation rather than letting it abort the
+/// boot (mirrors lamboot's `MAX_BOOT_FILE_BYTES`). The streaming `read_file_at`
+/// path is unaffected. (SPEC-LAMZFS §2.5.)
+pub const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
