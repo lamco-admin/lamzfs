@@ -6,9 +6,9 @@
 //! location in the pool; this module maps it to physical reads on the member
 //! devices. For a single leaf there is one copy; for a mirror every child holds
 //! the same bytes, so a child that fails its checksum is retried against the next
-//! (the read side of ZFS self-healing). RAIDZ1 reconstruction lands in a
-//! follow-up increment; until then `Topology` models single + mirror, and import
-//! rejects raidz with a typed error.
+//! (the read side of ZFS self-healing). RAIDZ1 stripes data across columns; the
+//! healthy read concatenates the data columns (degraded-mode XOR reconstruction
+//! is a follow-up). raidz2/3 and dRAID are rejected at import.
 
 use alloc::{vec, vec::Vec};
 
@@ -165,6 +165,10 @@ struct RaidzCol {
 /// Compute the RAID-Z column layout for a DVA (the `vdev_raidz_map_alloc`
 /// geometry): which child holds each data/parity column, at what per-child byte
 /// offset and size. `psize` is the *data* size; parity columns are added.
+#[expect(
+    clippy::many_single_char_names,
+    reason = "b/s/f/o/q/r mirror the variable names in ZFS vdev_raidz_map_alloc"
+)]
 fn raidz_map(
     dva: &Dva,
     ashift: u8,
