@@ -156,6 +156,25 @@ fn single_lz4_read_dir_lists_catalog() {
 }
 
 #[test]
+fn peek_pool_id_groups_members() {
+    // Every member of the mirror reports the same pool identity, without import.
+    let fx = fixture("mirror_lz4");
+    let want_guid = guid_of(&fx);
+    let want_name = fx["pool"].as_str().unwrap();
+    for m in fx["members"].as_array().unwrap() {
+        let img = decompress(m.as_str().unwrap());
+        let device_size_bytes = img.len() as u64;
+        let mut member = PoolMember {
+            reader: Mem(img),
+            device_size_bytes,
+        };
+        let id = lamzfs::peek_pool_id(&mut member).expect("peek pool id");
+        assert_eq!(id.guid, want_guid);
+        assert_eq!(id.name, want_name);
+    }
+}
+
+#[test]
 fn single_lz4_enumerates_datasets() {
     let (mut zfs, _fx) = import("single_lz4");
     // Pool layout: lamzt_single_lz4 (root) / BOOT / BOOT/test.

@@ -49,6 +49,24 @@ pub(crate) struct ImportedPool {
     pub order: EndianOrder,
 }
 
+/// Read one member's pool identity (`guid`, `name`) from its vdev label config
+/// nvlist, without importing the pool — for grouping members into pools before
+/// import (a host may carry members of several pools).
+pub(crate) fn peek_pool_id<R: BlockRead>(member: &mut PoolMember<R>) -> Result<(u64, String)> {
+    let mut sha = Sha256::new(Sha256Implementation::Generic).map_err(|_| Error::Inconsistent {
+        token: "sha_init",
+        where_: Location::Uberblock,
+    })?;
+    let buf = read_nvpairs(member, &mut sha)?;
+    let nvp = LabelNvPairs::from_bytes(&buf, L0_NVPAIRS_SECTOR, &mut sha)
+        .map_err(|_| Error::BadLabel(LabelReason::BadChecksum))?;
+    let config =
+        NvList::from_bytes(nvp.payload).map_err(|_| Error::BadLabel(LabelReason::BadMagic))?;
+    let guid = nv_u64(&config, "pool_guid")?;
+    let name = nv_str(&config, "name")?.into();
+    Ok((guid, name))
+}
+
 /// Import the pool from its member device(s): decode member 0's config nvlist,
 /// build the topology, and select the active uberblock.
 pub(crate) fn import<R: BlockRead>(members: &mut [PoolMember<R>]) -> Result<ImportedPool> {

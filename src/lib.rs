@@ -120,6 +120,24 @@ pub struct Stat {
     pub size: u64,
 }
 
+/// A pool's identity, read from a single member's label by [`peek_pool_id`]
+/// without a full import — used to group members into pools before import.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolId {
+    pub guid: u64,
+    pub name: String,
+}
+
+/// Read one member device's pool identity (`guid`, `name`) from its vdev label,
+/// without importing the pool. A host may carry members of several pools; group
+/// them by [`PoolId::guid`] and pass each group to [`Zfs::import`].
+pub fn peek_pool_id<R: BlockRead>(
+    member: &mut PoolMember<R>,
+) -> core::result::Result<PoolId, Error> {
+    let (guid, name) = pool::peek_pool_id(member)?;
+    Ok(PoolId { guid, name })
+}
+
 /// An imported, read-only ZFS pool with one active dataset presented as a
 /// single-rooted filesystem. Built by [`Zfs::import`].
 pub struct Zfs<R: BlockRead> {
