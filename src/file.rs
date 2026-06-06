@@ -54,9 +54,8 @@ fn read_dnode_block<R: BlockRead>(
     let mask = (1u64 << epb_shift) - 1;
 
     let top_idx = (blkid >> (epb_shift * u32::from(levels - 1))) as usize;
-    let top = match ptrs.get(top_idx) {
-        Some(Some(bp)) => bp,
-        _ => return Ok(None),
+    let Some(Some(top)) = ptrs.get(top_idx) else {
+        return Ok(None); // out of range or a hole at the top level
     };
     if levels == 1 {
         return Ok(Some(read_block_pointer(members, topo, top)?));
