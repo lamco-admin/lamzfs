@@ -144,8 +144,8 @@ pub(crate) fn resolve_path<R: BlockRead>(
     })
 }
 
-/// SA (System Attributes) bonus magic.
-const SA_MAGIC: u32 = 0x2F50_5A;
+/// SA (System Attributes) bonus magic (`0x2F505A`).
+const SA_MAGIC: u32 = 0x002F_505A;
 /// Byte offset of the `ZPL_SIZE` attribute within the SA data for the standard
 /// ZPL regular-file layout, whose stored order (per `zdb`) is uid(8), gid(8),
 /// atime(16), mtime(16), ctime(16), crtime(16), gen(8), mode(8), then size:
