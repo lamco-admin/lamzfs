@@ -66,6 +66,8 @@ pub enum Error {
     },
     /// The target exists but is not a regular file.
     NotARegularFile,
+    /// A non-final path component (or a `read_dir` target) is not a directory.
+    NotADirectory,
     /// The target exists but is not a symlink.
     NotASymlink,
     /// A metadata-reported size exceeded the read cap
@@ -156,6 +158,7 @@ impl Error {
             Error::UnsupportedCompression { .. } => "comp_unsupported",
             Error::NotFound { .. } => "not_found",
             Error::NotARegularFile => "not_a_regular_file",
+            Error::NotADirectory => "not_a_directory",
             Error::NotASymlink => "not_a_symlink",
             Error::FileTooLarge { .. } => "file_too_large",
             Error::OutOfMemory { site } => site,

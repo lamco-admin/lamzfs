@@ -44,9 +44,9 @@ use lamzfs::{BlockRead, PoolMember, Zfs};
 let mut zfs = Zfs::import(members())?;          // one PoolMember per vdev member
 println!("pool {} ({:#x})", zfs.pool_name(), zfs.pool_guid());
 
-// Dataset path = child-directory components under the pool root; file path =
-// components within that dataset's filesystem.
-for entry in zfs.read_dir(&["BOOT", "default"])? {
+// Dataset path = child-directory components under the pool root; the second
+// argument is the directory within that dataset (empty = its root).
+for entry in zfs.read_dir(&["BOOT", "default"], &[])? {
     println!("{:?} {}", entry.kind, entry.name);
 }
 let kernel = zfs.read(&["BOOT", "default"], &["vmlinuz"])?;

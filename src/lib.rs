@@ -112,6 +112,14 @@ fn dirent_kind(value: u64) -> EntryKind {
 }
 const DIRENT_OBJ_MASK: u64 = (1 << 48) - 1;
 
+/// Metadata for a path within a dataset: its kind and, for a regular file, its
+/// logical size in bytes (0 for non-files).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stat {
+    pub kind: EntryKind,
+    pub size: u64,
+}
+
 /// An imported, read-only ZFS pool with one active dataset presented as a
 /// single-rooted filesystem. Built by [`Zfs::import`].
 pub struct Zfs<R: BlockRead> {
@@ -148,24 +156,34 @@ impl<R: BlockRead> Zfs<R> {
         self.members.len()
     }
 
-    /// List the root directory of the dataset named by `dataset_path` — child
-    /// directory components under the pool root (e.g. `["BOOT", "ubuntu_x1"]`,
-    /// the `DatasetSelector::Name` case). Walks the MOS + DSL to the dataset's
-    /// object set, then its ZPL master node and root directory.
+    /// List a directory within a dataset. `dataset_path` is the child-directory
+    /// components under the pool root selecting the dataset (e.g.
+    /// `["BOOT", "ubuntu_x1"]`); `dir_path` is the directory within that
+    /// dataset's ZPL filesystem (empty = the dataset's root directory).
     pub fn read_dir(
         &mut self,
         dataset_path: &[&str],
+        dir_path: &[&str],
     ) -> core::result::Result<Vec<DirEntry>, Error> {
         let order = self.pool.order;
-        let ds = dataset::open_dataset(
-            &mut self.members,
-            &self.pool.topology,
-            &self.pool.mos_dnode,
-            order,
-            dataset_path,
-        )?;
-        let root = dataset::root_dir_obj(&mut self.members, &self.pool.topology, &ds, order)?;
-        let entries = dataset::list_dir(&mut self.members, &self.pool.topology, &ds, root, order)?;
+        let ds = self.open_dataset(dataset_path)?;
+        let dir_obj = if dir_path.is_empty() {
+            dataset::root_dir_obj(&mut self.members, &self.pool.topology, &ds, order)?
+        } else {
+            let (obj, value) = dataset::resolve_path(
+                &mut self.members,
+                &self.pool.topology,
+                &ds,
+                order,
+                dir_path,
+            )?;
+            if dirent_kind(value) != EntryKind::Directory {
+                return Err(Error::NotADirectory);
+            }
+            obj
+        };
+        let entries =
+            dataset::list_dir(&mut self.members, &self.pool.topology, &ds, dir_obj, order)?;
         Ok(entries
             .into_iter()
             .map(|(name, value)| DirEntry {
@@ -176,40 +194,64 @@ impl<R: BlockRead> Zfs<R> {
             .collect())
     }
 
-    /// Read a regular file's full contents from the dataset named by
-    /// `dataset_path`, at `file_path` (path components within that dataset).
-    /// Caps the allocation at [`MAX_FILE_BYTES`]; a hole reads as zeros.
+    /// Stat a path within a dataset (empty `path` = the dataset root, a
+    /// directory). Returns the entry kind and, for a regular file, its size.
+    pub fn stat(
+        &mut self,
+        dataset_path: &[&str],
+        path: &[&str],
+    ) -> core::result::Result<Stat, Error> {
+        let order = self.pool.order;
+        let ds = self.open_dataset(dataset_path)?;
+        if path.is_empty() {
+            return Ok(Stat {
+                kind: EntryKind::Directory,
+                size: 0,
+            });
+        }
+        let (obj, value) =
+            dataset::resolve_path(&mut self.members, &self.pool.topology, &ds, order, path)?;
+        let kind = dirent_kind(value);
+        let size = if kind == EntryKind::Regular {
+            let dnode = walk::read_object_dnode(
+                &mut self.members,
+                &self.pool.topology,
+                &ds.meta_dnode,
+                obj,
+                order,
+            )?;
+            dataset::sa_file_size(dnode.bonus_used(), order)?
+        } else {
+            0
+        };
+        Ok(Stat { kind, size })
+    }
+
+    /// Whether a path exists within a dataset. A genuine read error (corruption,
+    /// I/O) still propagates; only "no such component" maps to `Ok(false)`.
+    pub fn exists(
+        &mut self,
+        dataset_path: &[&str],
+        path: &[&str],
+    ) -> core::result::Result<bool, Error> {
+        match self.stat(dataset_path, path) {
+            Ok(_) => Ok(true),
+            Err(Error::NotFound { .. }) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Read a regular file's full contents from `dataset_path` at `file_path`
+    /// (components within that dataset). Caps the allocation at
+    /// [`MAX_FILE_BYTES`]; a hole reads as zeros.
     pub fn read(
         &mut self,
         dataset_path: &[&str],
         file_path: &[&str],
     ) -> core::result::Result<Vec<u8>, Error> {
         let order = self.pool.order;
-        let ds = dataset::open_dataset(
-            &mut self.members,
-            &self.pool.topology,
-            &self.pool.mos_dnode,
-            order,
-            dataset_path,
-        )?;
-        let (obj, value) = dataset::resolve_path(
-            &mut self.members,
-            &self.pool.topology,
-            &ds,
-            order,
-            file_path,
-        )?;
-        if dirent_kind(value) != EntryKind::Regular {
-            return Err(Error::NotARegularFile);
-        }
-        let dnode = walk::read_object_dnode(
-            &mut self.members,
-            &self.pool.topology,
-            &ds.meta_dnode,
-            obj,
-            order,
-        )?;
-        let size = dataset::sa_file_size(dnode.bonus_used(), order)?;
+        let ds = self.open_dataset(dataset_path)?;
+        let (dnode, size) = self.regular_file(&ds, file_path)?;
         if size > MAX_FILE_BYTES {
             return Err(Error::FileTooLarge {
                 size,
@@ -228,6 +270,83 @@ impl<R: BlockRead> Zfs<R> {
             size,
             order,
         )
+    }
+
+    /// Read up to `len` bytes of a regular file starting at `offset` (the
+    /// streaming path; a hole reads as zeros). The window is clamped to the file
+    /// end, so a short read at EOF returns fewer than `len` bytes. A single
+    /// window is itself bounded by [`MAX_FILE_BYTES`].
+    pub fn read_at(
+        &mut self,
+        dataset_path: &[&str],
+        file_path: &[&str],
+        offset: u64,
+        len: usize,
+    ) -> core::result::Result<Vec<u8>, Error> {
+        let order = self.pool.order;
+        let ds = self.open_dataset(dataset_path)?;
+        let (dnode, size) = self.regular_file(&ds, file_path)?;
+        if offset >= size {
+            return Ok(Vec::new());
+        }
+        let want = (len as u64).min(size - offset);
+        if want > MAX_FILE_BYTES {
+            return Err(Error::FileTooLarge {
+                size: want,
+                max: MAX_FILE_BYTES,
+            });
+        }
+        let want = usize::try_from(want).map_err(|_| Error::FileTooLarge {
+            size: want,
+            max: MAX_FILE_BYTES,
+        })?;
+        file::read_dnode_range(
+            &mut self.members,
+            &self.pool.topology,
+            &dnode,
+            offset,
+            want,
+            order,
+        )
+    }
+
+    /// Walk the MOS + DSL to the dataset named by `dataset_path` and open its
+    /// object set.
+    fn open_dataset(
+        &mut self,
+        dataset_path: &[&str],
+    ) -> core::result::Result<dataset::Dataset, Error> {
+        dataset::open_dataset(
+            &mut self.members,
+            &self.pool.topology,
+            &self.pool.mos_dnode,
+            self.pool.order,
+            dataset_path,
+        )
+    }
+
+    /// Resolve `file_path` within an opened dataset to its dnode and logical
+    /// size, rejecting a non-regular target.
+    fn regular_file(
+        &mut self,
+        ds: &dataset::Dataset,
+        file_path: &[&str],
+    ) -> core::result::Result<(crate::phys::Dnode, u64), Error> {
+        let order = self.pool.order;
+        let (obj, value) =
+            dataset::resolve_path(&mut self.members, &self.pool.topology, ds, order, file_path)?;
+        if dirent_kind(value) != EntryKind::Regular {
+            return Err(Error::NotARegularFile);
+        }
+        let dnode = walk::read_object_dnode(
+            &mut self.members,
+            &self.pool.topology,
+            &ds.meta_dnode,
+            obj,
+            order,
+        )?;
+        let size = dataset::sa_file_size(dnode.bonus_used(), order)?;
+        Ok((dnode, size))
     }
 }
 

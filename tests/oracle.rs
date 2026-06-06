@@ -108,7 +108,7 @@ fn single_lz4_read_dir_lists_catalog() {
     let (mut zfs, fx) = import("single_lz4");
     let owned = dataset_path(&fx);
     let path: Vec<&str> = owned.iter().map(String::as_str).collect();
-    let entries = zfs.read_dir(&path).unwrap();
+    let entries = zfs.read_dir(&path, &[]).unwrap();
     let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
     for expected in [
         "vmlinuz-6.1.0-test",
@@ -124,6 +124,35 @@ fn single_lz4_read_dir_lists_catalog() {
     assert_eq!(by("loader").kind, EntryKind::Directory);
     assert_eq!(by("big.bin").kind, EntryKind::Regular);
     assert_eq!(by("vmlinuz").kind, EntryKind::Symlink);
+
+    // Nested read_dir: list the `loader/entries` subdirectory within the dataset.
+    let nested = zfs.read_dir(&path, &["loader", "entries"]).unwrap();
+    assert!(
+        nested.iter().any(|e| e.name == "test.conf"),
+        "loader/entries should contain test.conf, got {:?}",
+        nested.iter().map(|e| e.name.as_str()).collect::<Vec<_>>()
+    );
+
+    // stat: a regular file reports its size; a directory reports kind only.
+    let st = zfs.stat(&path, &["os-release"]).unwrap();
+    assert_eq!(st.kind, EntryKind::Regular);
+    assert!(st.size > 0 && st.size < 4096);
+    assert_eq!(
+        zfs.stat(&path, &["loader"]).unwrap().kind,
+        EntryKind::Directory
+    );
+    assert!(zfs.exists(&path, &["big.bin"]).unwrap());
+    assert!(!zfs.exists(&path, &["no-such-file"]).unwrap());
+
+    // read_at: a window in the middle of big.bin matches the full read.
+    let full = zfs.read(&path, &["big.bin"]).unwrap();
+    let window = zfs.read_at(&path, &["big.bin"], 4096, 256).unwrap();
+    assert_eq!(window, &full[4096..4096 + 256]);
+    // A read past EOF clamps to empty.
+    assert!(zfs
+        .read_at(&path, &["big.bin"], full.len() as u64 + 10, 16)
+        .unwrap()
+        .is_empty());
 }
 
 /// Every file in the MANIFEST reads back byte-for-byte against its kernel-

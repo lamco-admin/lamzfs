@@ -65,6 +65,9 @@ fuzz_target!(|inp: Input| {
         .filter_map(|b| core::str::from_utf8(b).ok())
         .collect();
 
-    let _ = zfs.read_dir(&ds_owned);
+    let _ = zfs.read_dir(&ds_owned, &fp_owned);
+    let _ = zfs.stat(&ds_owned, &fp_owned);
+    let _ = zfs.exists(&ds_owned, &fp_owned);
     let _ = zfs.read(&ds_owned, &fp_owned);
+    let _ = zfs.read_at(&ds_owned, &fp_owned, 0, 4096);
 });

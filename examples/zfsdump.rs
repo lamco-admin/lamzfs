@@ -88,7 +88,7 @@ fn main() -> ExitCode {
     );
     println!();
 
-    match zfs.read_dir(&ds) {
+    match zfs.read_dir(&ds, &[]) {
         Ok(entries) => print_listing(&mut zfs, &ds, &entries),
         Err(e) => {
             eprintln!("read_dir: {e:?}");

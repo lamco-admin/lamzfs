@@ -34,7 +34,7 @@ fuzz_target!(|data: &[u8]| {
     };
 
     // The root dataset's ZPL root directory.
-    let Ok(entries) = zfs.read_dir(&[]) else {
+    let Ok(entries) = zfs.read_dir(&[], &[]) else {
         return;
     };
 
@@ -45,16 +45,21 @@ fuzz_target!(|data: &[u8]| {
         }
         budget -= 1;
         let name = e.name.as_str();
+        let _ = zfs.stat(&[], &[name]);
+        let _ = zfs.exists(&[], &[name]);
         match e.kind {
-            // Read the file (the resolve + size + block-read + decompress path).
+            // Read the file: full and a window (resolve + size + block read +
+            // decompress, plus the read_at offset/clamp arithmetic).
             EntryKind::Regular | EntryKind::Symlink | EntryKind::Other => {
                 let _ = zfs.read(&[], &[name]);
+                let _ = zfs.read_at(&[], &[name], 1, 64);
             }
-            // A child directory name is also a plausible child *dataset* name —
-            // exercise open_dataset's DSL directory walk.
             EntryKind::Directory => {
-                let _ = zfs.read_dir(&[name]);
-                let _ = zfs.read(&[name], &[name]);
+                // Nested listing within the root dataset (resolve + list_dir).
+                let _ = zfs.read_dir(&[], &[name]);
+                // The name is also a plausible child *dataset* — exercise the
+                // DSL directory walk.
+                let _ = zfs.read_dir(&[name], &[]);
             }
         }
     }
