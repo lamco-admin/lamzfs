@@ -188,3 +188,37 @@ fn raidz1_imports_all_members() {
 fn raidz1_lz4_files_read_byte_exact() {
     assert_files_byte_exact("raidz1_lz4");
 }
+
+/// Drop one of the three raidz1 members (a failed disk) and confirm every file
+/// still reads back byte-exact — parity reconstructs the missing column.
+#[test]
+fn raidz1_degraded_reconstructs() {
+    let fx = fixture("raidz1_lz4");
+    let members: Vec<PoolMember<Mem>> = fx["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .take(2) // only 2 of 3 columns provided
+        .map(|m| {
+            let img = decompress(m.as_str().unwrap());
+            let device_size_bytes = img.len() as u64;
+            PoolMember {
+                reader: Mem(img),
+                device_size_bytes,
+            }
+        })
+        .collect();
+    let mut zfs = Zfs::import(members).expect("import degraded raidz1");
+    assert_eq!(zfs.member_count(), 2);
+    let owned = dataset_path(&fx);
+    let ds: Vec<&str> = owned.iter().map(String::as_str).collect();
+    for f in fx["files"].as_array().unwrap() {
+        let path = f["path"].as_str().unwrap();
+        let want = f["sha256"].as_str().unwrap();
+        let comps: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+        let data = zfs
+            .read(&ds, &comps)
+            .unwrap_or_else(|e| panic!("degraded read {path}: {e:?}"));
+        assert_eq!(sha256_hex(&data), want, "degraded reconstruct mismatch for {path}");
+    }
+}

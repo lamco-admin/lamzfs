@@ -38,10 +38,12 @@ pub(crate) enum Topology {
     /// A mirror: every child holds the same data; read any healthy child.
     Mirror(Vec<usize>),
     /// A single-parity RAID-Z: data is striped across `children` with one parity
-    /// column per row; reconstruct a missing/bad column by XOR.
+    /// column per row; a missing or checksum-failing column is reconstructed by
+    /// XOR against parity. A column is `None` when its member device was not
+    /// provided (a degraded pool — raidz1 tolerates one).
     RaidZ1 {
-        /// Member indices of the raidz columns, in column order.
-        children: Vec<usize>,
+        /// Member index per raidz column, in column order; `None` = absent.
+        children: Vec<Option<usize>>,
         /// The vdev sector shift (raidz geometry is in `1 << ashift` sectors).
         ashift: u8,
     },
@@ -222,77 +224,136 @@ fn raidz_map(
     Ok(cols)
 }
 
-/// Assemble a RAID-Z block's physical (pre-decompression) bytes by reading and
-/// concatenating its data columns (the healthy path — every column present).
-fn raidz1_assemble<R: BlockRead>(
+/// Read every raidz column into a per-column buffer; an absent member (`None`
+/// index) or a failed read yields `None` for that column.
+fn raidz1_read_columns<R: BlockRead>(
     members: &mut [PoolMember<R>],
-    children: &[usize],
-    ashift: u8,
-    dva: &Dva,
+    children: &[Option<usize>],
+    cols: &[RaidzCol],
+    vdev: u32,
+) -> Vec<Option<Vec<u8>>> {
+    cols.iter()
+        .map(|col| {
+            let mi = (*children.get(col.devidx)?)?;
+            let byte = LABEL_RESERVE.checked_add(col.offset)?;
+            let member = members.get_mut(mi)?;
+            let mut buf = vec![0u8; col.size];
+            read_exact(&mut member.reader, byte, &mut buf, u64::from(vdev), "io_raidz").ok()?;
+            Some(buf)
+        })
+        .collect()
+}
+
+/// Concatenate the data columns into the physical block (truncated to `psize`),
+/// substituting `replacement` for column `replace_idx` when given. `None` if a
+/// needed data column is absent.
+fn raidz1_assemble(
+    cols: &[RaidzCol],
+    colbufs: &[Option<Vec<u8>>],
     psize: usize,
-) -> Result<Vec<u8>> {
-    let oob = || Error::Inconsistent {
-        token: "raidz_col_oob",
-        where_: Location::Vdev { guid: 0 },
-    };
-    let cols = raidz_map(dva, ashift, children.len() as u64, 1, psize)?;
+    replace_idx: Option<usize>,
+    replacement: Option<&[u8]>,
+) -> Option<Vec<u8>> {
     let mut data = Vec::with_capacity(psize);
-    for col in &cols {
+    for (i, col) in cols.iter().enumerate() {
         if col.parity {
             continue;
         }
-        let mi = *children.get(col.devidx).ok_or_else(oob)?;
-        let member = members.get_mut(mi).ok_or_else(oob)?;
-        let byte = LABEL_RESERVE.checked_add(col.offset).ok_or_else(oob)?;
-        let mut buf = vec![0u8; col.size];
-        read_exact(
-            &mut member.reader,
-            byte,
-            &mut buf,
-            u64::from(dva.vdev),
-            "io_raidz",
-        )?;
-        data.extend_from_slice(&buf);
+        if Some(i) == replace_idx {
+            data.extend_from_slice(replacement?);
+        } else {
+            data.extend_from_slice(colbufs.get(i)?.as_deref()?);
+        }
     }
     if data.len() < psize {
-        return Err(Error::Inconsistent {
-            token: "raidz_short",
-            where_: Location::Vdev { guid: 0 },
-        });
+        return None;
     }
     data.truncate(psize);
-    Ok(data)
+    Some(data)
 }
 
-/// Read a RAID-Z1 block pointer: for each DVA copy, assemble its data columns and
-/// verify the checksum, returning the first copy that verifies, decompressed.
+/// Reconstruct raidz column `target` as parity XOR the other present columns
+/// (raidz1: parity is column 0). `None` if parity or another needed column is
+/// absent — more than the recoverable one is missing.
+fn raidz1_reconstruct(cols: &[RaidzCol], colbufs: &[Option<Vec<u8>>], target: usize) -> Option<Vec<u8>> {
+    let parity = colbufs.first()?.as_deref()?;
+    let size = cols.get(target)?.size;
+    let mut rebuilt = vec![0u8; size];
+    let n = size.min(parity.len());
+    rebuilt[..n].copy_from_slice(&parity[..n]);
+    for (i, _col) in cols.iter().enumerate() {
+        if i == 0 || i == target {
+            continue; // skip parity (the seed) and the column being rebuilt
+        }
+        let other = colbufs.get(i)?.as_deref()?;
+        for (k, b) in other.iter().enumerate().take(size) {
+            rebuilt[k] ^= b;
+        }
+    }
+    Some(rebuilt)
+}
+
+/// Read a RAID-Z1 block pointer. For each DVA copy: read all columns, try the
+/// healthy assembly, and on a missing/checksum-failing column reconstruct each
+/// data column from parity in turn until one verifies (raidz1 recovers one).
 fn raidz1_read<R: BlockRead>(
     members: &mut [PoolMember<R>],
-    children: &[usize],
+    children: &[Option<usize>],
     ashift: u8,
     r: &BlockPointerRegular,
     psize: usize,
     lsize: usize,
 ) -> Result<Vec<u8>> {
+    let dcols = children.len() as u64;
     let mut last = Error::Inconsistent {
         token: "raidz_no_copy",
         where_: Location::Vdev { guid: 0 },
     };
     for dva in r.dvas.iter().flatten() {
-        match raidz1_assemble(members, children, ashift, dva, psize) {
-            Ok(raw) => match verify_block(
+        let cols = match raidz_map(dva, ashift, dcols, 1, psize) {
+            Ok(c) => c,
+            Err(e) => {
+                last = e;
+                continue;
+            }
+        };
+        let colbufs = raidz1_read_columns(members, children, &cols, dva.vdev);
+        let verify = |raw: &[u8]| {
+            verify_block(
                 r.checksum_type,
                 r.order,
-                &raw,
+                raw,
                 &r.checksum_value,
                 u64::from(dva.vdev),
                 dva.offset,
-            ) {
-                Ok(()) => return decompress(r.compression, &raw, lsize),
-                Err(e) => last = e,
-            },
-            Err(e) => last = e,
+            )
+            .is_ok()
+        };
+        // Healthy: every data column present and correct.
+        if let Some(raw) = raidz1_assemble(&cols, &colbufs, psize, None, None) {
+            if verify(&raw) {
+                return decompress(r.compression, &raw, lsize);
+            }
         }
+        // Degraded: rebuild each data column from parity and re-verify.
+        for (i, col) in cols.iter().enumerate() {
+            if col.parity {
+                continue;
+            }
+            let Some(rebuilt) = raidz1_reconstruct(&cols, &colbufs, i) else {
+                continue;
+            };
+            if let Some(raw) = raidz1_assemble(&cols, &colbufs, psize, Some(i), Some(&rebuilt)) {
+                if verify(&raw) {
+                    return decompress(r.compression, &raw, lsize);
+                }
+            }
+        }
+        last = Error::ChecksumMismatch {
+            vdev: u64::from(dva.vdev),
+            offset: dva.offset,
+            what: "raidz_unrecoverable",
+        };
     }
     Err(last)
 }

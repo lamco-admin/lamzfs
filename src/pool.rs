@@ -128,8 +128,18 @@ fn build_topology<R: BlockRead>(
             let ashift = u8::try_from(nv_u64(vtree, "ashift")?).unwrap_or(9);
             let children = nv_child_guids(vtree)?;
             let mut idx = Vec::with_capacity(children.len());
+            let mut present = 0usize;
             for guid in children {
-                idx.push(find_member_by_guid(members, guid, sha)?);
+                let m = find_member_by_guid(members, guid, sha).ok();
+                if m.is_some() {
+                    present += 1;
+                }
+                idx.push(m);
+            }
+            // raidz1 needs all but at most one column present to read (parity
+            // reconstructs the missing one).
+            if present + 1 < idx.len() {
+                return Err(Error::UnsupportedTopology("topo_raidz_degraded"));
             }
             Ok(Topology::RaidZ1 {
                 children: idx,
