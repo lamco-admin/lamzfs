@@ -1,13 +1,48 @@
 lamzfs — third-party attribution
+================================
 
-lamzfs vendors the parsing core of:
+lamzfs vendors the on-disk ZFS *decoders* from:
 
-  rzfs (the MIT-elected half of its GPL-2.0-OR-MIT dual license)
-  License: MIT
+  rzfs  —  https://github.com/cybojanek/rzfs
+  Commit: ea41cf0b5b29c17df92c4a631184aa1db5eb72a9
+  Upstream license: GPL-2.0 OR MIT (per-file SPDX, dual)
+  Copyright (c) the rzfs authors (cybojanek)
 
-The vendored portions retain that license (per-file SPDX headers mark them); new
-lamzfs code is licensed MIT OR Apache-2.0 (see LICENSE-MIT, LICENSE-APACHE).
+LICENSE ELECTION
+----------------
+rzfs is offered under "GPL-2.0 OR MIT". lamzfs ELECTS MIT and vendors the
+derived files under MIT ONLY. Every vendored file's SPDX header has been changed
+from `GPL-2.0 OR MIT` to `MIT`, with a provenance line recording the source
+commit. The election is a downstream right of the `OR` license; no GPL terms
+apply to lamzfs.
 
-`rzfs` is dual-licensed GPL-2.0 OR MIT; lamzfs elects and vendors under MIT only.
-The on-disk format is read clean-room from the permissive modern ZFS on-disk spec,
-not from CDDL OpenZFS source.
+The MIT election was validated by a dependency audit at the vendored commit:
+`rzfs/lib/Cargo.toml` declares an EMPTY `[dependencies]` section (zero runtime
+dependencies), so nothing transitive can re-impose GPL-only terms. See
+docs/PORTING-NOTES.md for the audit record.
+
+WHAT IS VENDORED (MIT)
+----------------------
+The `src/phys/`, `src/checksum/`, `src/compression/`, `src/util/`, and
+`src/arch/` subtrees (the format decoders, scalar checksums, and the LZJB
+decompressor) are ported from rzfs `lib/src`. The std-only `userspace` block
+device layer, the SIMD-accelerated checksum paths, and the `exe`/`fuse`/`module`
+crates are not vendored.
+
+WHAT IS NEW lamzfs CODE (MIT OR Apache-2.0)
+-------------------------------------------
+All other files — the pool import, vdev topology + DVA routing, dataset walk,
+ZAP/path resolution, file read with decompression dispatch, the `BlockRead`
+seam, and the public API and error surface — are original lamzfs code under
+`MIT OR Apache-2.0` (see LICENSE-MIT, LICENSE-APACHE).
+
+CRATE LICENSE FLOOR
+-------------------
+Because the vendored subtree is MIT-only, the crate's effective floor license is
+`MIT` (Cargo.toml `license = "MIT"`). New files are additionally available under
+Apache-2.0 per their SPDX headers. Microsoft Secure Boot signing accepts MIT; no
+GPL code is linked.
+
+The third-party decompressors lamzfs depends on at build time (`lz4_flex`,
+`ruzstd`, `miniz_oxide`) are each permissive (MIT / MIT-or-Apache / Zlib) and
+carry their own notices.

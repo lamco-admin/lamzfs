@@ -12,8 +12,8 @@ authors = [
     "Greg Lamberson <greg@lamco.io>",
     "Lamco Development LLC <office@lamco.io>",
 ]
-license = "MIT OR Apache-2.0"
-description = "no_std read-only ZFS reader for UEFI bootloaders (single + mirror vdev, unencrypted bpool)"
+license = "MIT"
+description = "no_std read-only ZFS reader for UEFI bootloaders (single/mirror/raidz1, unencrypted bpool)"
 repository = "https://github.com/lamco-admin/lamzfs"
 homepage = "https://lamco.ai/products/lamboot/"
 readme = "README.md"
@@ -36,6 +36,25 @@ include = [
 [features]
 default = []
 std = []
+
+# Vendored rzfs SIMD-accelerated checksum features. Declared so `cfg(feature =
+# ...)` in the vendored subtree resolves cleanly, but NEVER enabled: lamzfs
+# compiles scalar Fletcher-2/4 + SHA-256 for portability (SPEC-LAMZFS §5.1).
+fletcher2-sse2 = []
+fletcher2-ssse3 = []
+fletcher2-avx2 = []
+fletcher2-avx512f = []
+fletcher2-avx512bw = []
+fletcher4-sse2 = []
+fletcher4-ssse3 = []
+fletcher4-avx2 = []
+fletcher4-avx512f = []
+fletcher4-avx512bw = []
+sha256-bmi = []
+sha256-ssse3 = []
+sha256-avx = []
+sha256-avx2 = []
+sha256-sha = []
 
 [package.metadata.docs.rs]
 all-features = true
