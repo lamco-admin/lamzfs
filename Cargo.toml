@@ -31,7 +31,11 @@ include = [
 ]
 
 [dependencies]
-# Dependencies are added with the implementation (all permissive, upstream-cleared).
+# Per-block decompressors (all permissive, no_std, feature-gated). ZFS LZJB is
+# carried from the vendored rzfs fork; these cover the rest of the on-disk set.
+lz4_flex = { version = "0.11", default-features = false, features = ["safe-decode"], optional = true }
+ruzstd = { version = "0.8", default-features = false, optional = true }
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"], optional = true }
 
 [lib]
 # The vendored rzfs decoders carry hundreds of doc examples written against the
@@ -41,8 +45,15 @@ include = [
 doctest = false
 
 [features]
-default = []
+default = ["lz4", "zstd", "gzip", "lzjb", "mirror"]
 std = []
+
+# Per-codec gates (SPEC-LAMZFS §10). `off` and `zle` are always compiled.
+lz4 = ["dep:lz4_flex"]
+zstd = ["dep:ruzstd"]
+gzip = ["dep:miniz_oxide"]
+lzjb = []
+mirror = []
 
 # Vendored rzfs SIMD-accelerated checksum features. Declared so `cfg(feature =
 # ...)` in the vendored subtree resolves cleanly, but NEVER enabled: lamzfs
