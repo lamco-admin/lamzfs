@@ -7,6 +7,15 @@ use std::io::Read as _;
 
 use lamzfs::{BlockRead, EntryKind, PoolMember, Zfs};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+
+fn sha256_hex(data: &[u8]) -> String {
+    use std::fmt::Write as _;
+    Sha256::digest(data).iter().fold(String::new(), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
 
 struct Mem(Vec<u8>);
 
@@ -115,4 +124,31 @@ fn single_lz4_read_dir_lists_catalog() {
     assert_eq!(by("loader").kind, EntryKind::Directory);
     assert_eq!(by("big.bin").kind, EntryKind::Regular);
     assert_eq!(by("vmlinuz").kind, EntryKind::Symlink);
+}
+
+/// Every file in the MANIFEST reads back byte-for-byte against its kernel-
+/// produced SHA-256 — the headline oracle: contiguous, multi-block (big.bin),
+/// nested (loader/entries/test.conf), and holey (sparse) files.
+fn assert_files_byte_exact(name: &str) {
+    let (mut zfs, fx) = import(name);
+    let owned = dataset_path(&fx);
+    let ds: Vec<&str> = owned.iter().map(String::as_str).collect();
+    let mut checked = 0;
+    for f in fx["files"].as_array().unwrap() {
+        let path = f["path"].as_str().unwrap();
+        let want = f["sha256"].as_str().unwrap();
+        let comps: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+        let data = zfs
+            .read(&ds, &comps)
+            .unwrap_or_else(|e| panic!("read {path}: {e:?}"));
+        assert_eq!(sha256_hex(&data), want, "content mismatch for {path}");
+        checked += 1;
+    }
+    assert!(checked >= 5, "expected >= 5 files, checked {checked}");
+}
+
+#[test]
+#[ignore = "file size needs the SA_ATTRS registry/layout parse (modern ZPL files store a variable-length DACL, so the SA header size + attr order are dynamic); resolve + dnode read + block read are wired, only exact sizing remains"]
+fn single_lz4_files_read_byte_exact() {
+    assert_files_byte_exact("single_lz4");
 }

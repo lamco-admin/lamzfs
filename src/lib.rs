@@ -168,6 +168,60 @@ impl<R: BlockRead> Zfs<R> {
             })
             .collect())
     }
+
+    /// Read a regular file's full contents from the dataset named by
+    /// `dataset_path`, at `file_path` (path components within that dataset).
+    /// Caps the allocation at [`MAX_FILE_BYTES`]; a hole reads as zeros.
+    pub fn read(
+        &mut self,
+        dataset_path: &[&str],
+        file_path: &[&str],
+    ) -> core::result::Result<Vec<u8>, Error> {
+        let order = self.pool.order;
+        let ds = dataset::open_dataset(
+            &mut self.members,
+            &self.pool.topology,
+            &self.pool.mos_dnode,
+            order,
+            dataset_path,
+        )?;
+        let (obj, value) = dataset::resolve_path(
+            &mut self.members,
+            &self.pool.topology,
+            &ds,
+            order,
+            file_path,
+        )?;
+        if dirent_kind(value) != EntryKind::Regular {
+            return Err(Error::NotARegularFile);
+        }
+        let dnode = walk::read_object_dnode(
+            &mut self.members,
+            &self.pool.topology,
+            &ds.meta_dnode,
+            obj,
+            order,
+        )?;
+        let size = dataset::sa_file_size(dnode.bonus_used(), order)?;
+        if size > MAX_FILE_BYTES {
+            return Err(Error::FileTooLarge {
+                size,
+                max: MAX_FILE_BYTES,
+            });
+        }
+        let size = usize::try_from(size).map_err(|_| Error::FileTooLarge {
+            size,
+            max: MAX_FILE_BYTES,
+        })?;
+        file::read_dnode_range(
+            &mut self.members,
+            &self.pool.topology,
+            &dnode,
+            0,
+            size,
+            order,
+        )
+    }
 }
 
 /// Largest file [`Zfs::read_file`] will allocate up front. A hostile dnode can

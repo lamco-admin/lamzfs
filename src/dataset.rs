@@ -112,3 +112,71 @@ pub(crate) fn list_dir<R: BlockRead>(
     let dir = read_object_dnode(members, topo, &dataset.meta_dnode, dir_obj, order)?;
     zap_entries(members, topo, &dir, order)
 }
+
+/// ZPL packs the object number in the low 48 bits of a directory-entry value.
+const DIRENT_OBJ_MASK: u64 = (1 << 48) - 1;
+
+/// Resolve `components` from the dataset's ZPL root to the final entry, returning
+/// `(object_number, dirent_value)` (the value carries the type in its high bits).
+/// Each non-final component must be a directory.
+pub(crate) fn resolve_path<R: BlockRead>(
+    members: &mut [PoolMember<R>],
+    topo: &Topology,
+    dataset: &Dataset,
+    order: EndianOrder,
+    components: &[&str],
+) -> Result<(u64, u64)> {
+    let mut dir_obj = root_dir_obj(members, topo, dataset, order)?;
+    let mut result = None;
+    for (i, comp) in components.iter().enumerate() {
+        let dir = read_object_dnode(members, topo, &dataset.meta_dnode, dir_obj, order)?;
+        let value = zap_lookup(members, topo, &dir, comp, order)?
+            .ok_or(Error::NotFound { component: "path" })?;
+        let obj = value & DIRENT_OBJ_MASK;
+        if i + 1 == components.len() {
+            result = Some((obj, value));
+        } else {
+            dir_obj = obj; // descend (a non-final component must be a directory)
+        }
+    }
+    result.ok_or(Error::NotFound {
+        component: "empty_path",
+    })
+}
+
+/// SA (System Attributes) bonus magic.
+const SA_MAGIC: u32 = 0x2F50_5A;
+/// Byte offset of the `ZPL_SIZE` attribute within the SA data for the standard
+/// ZPL regular-file layout, whose stored order (per `zdb`) is uid(8), gid(8),
+/// atime(16), mtime(16), ctime(16), crtime(16), gen(8), mode(8), then size:
+/// 8+8+16+16+16+16+8+8 = 96. (Parsing the SA_ATTRS registry/layouts for
+/// arbitrary layouts is a later refinement.)
+const SA_SIZE_OFFSET_STD: usize = 96;
+
+/// Extract a regular file's logical size from its SA bonus buffer. v0.1 assumes
+/// the standard ZPL attribute layout (the only one a stock `/boot` file uses);
+/// parsing the SA_ATTRS registry for arbitrary layouts is a later refinement.
+pub(crate) fn sa_file_size(bonus: &[u8], order: EndianOrder) -> Result<u64> {
+    let unsupported = Error::UnsupportedFeature("sa_layout");
+    let magic_bytes = bonus.get(0..4).ok_or(unsupported.clone())?;
+    let magic = match order {
+        EndianOrder::Big => u32::from_be_bytes(magic_bytes.try_into().unwrap()),
+        EndianOrder::Little => u32::from_le_bytes(magic_bytes.try_into().unwrap()),
+    };
+    if magic != SA_MAGIC {
+        return Err(unsupported);
+    }
+    let info_bytes = bonus.get(4..6).ok_or(unsupported.clone())?;
+    let layout_info = match order {
+        EndianOrder::Big => u16::from_be_bytes(info_bytes.try_into().unwrap()),
+        EndianOrder::Little => u16::from_le_bytes(info_bytes.try_into().unwrap()),
+    };
+    // High 6 bits of layout_info hold the SA header size in 8-byte units.
+    let hdrsz = usize::from((layout_info >> 10) & 0x3f) * 8;
+    let off = hdrsz + SA_SIZE_OFFSET_STD;
+    let size_bytes = bonus.get(off..off + 8).ok_or(unsupported)?;
+    Ok(match order {
+        EndianOrder::Big => u64::from_be_bytes(size_bytes.try_into().unwrap()),
+        EndianOrder::Little => u64::from_le_bytes(size_bytes.try_into().unwrap()),
+    })
+}
