@@ -59,6 +59,7 @@ vendored!(arch, checksum, compression, phys, util);
 // New lamzfs orchestration (MIT OR Apache-2.0) — full lint set applies.
 // ---------------------------------------------------------------------------
 mod block_read;
+mod cksum;
 mod compress;
 mod error;
 mod path;
