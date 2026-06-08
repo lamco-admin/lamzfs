@@ -6,7 +6,7 @@
 
 [package]
 name = "lamzfs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = [
     "Greg Lamberson <greg@lamco.io>",
@@ -33,7 +33,7 @@ include = [
 [dependencies]
 # Per-block decompressors (all permissive, no_std, feature-gated). ZFS LZJB is
 # carried from the vendored rzfs fork; these cover the rest of the on-disk set.
-lz4_flex = { version = "0.11", default-features = false, features = ["safe-decode"], optional = true }
+lz4_flex = { version = "0.13", default-features = false, features = ["safe-decode"], optional = true }
 ruzstd = { version = "0.8", default-features = false, optional = true }
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"], optional = true }
 

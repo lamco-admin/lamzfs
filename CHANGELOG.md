@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-08
+
+### Changed
+
+- Bump the `lz4_flex` dependency from 0.11 to 0.13 (the version carried in the
+  Debian archive); the `block::decompress_into` API is unchanged, so this is a
+  dependency alignment with no functional change.
+
 ## [0.1.0] - 2026-06-06
 
 First functional release: a `no_std` + `alloc`, read-only ZFS pool reader for
