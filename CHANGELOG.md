@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-19
+
+### Changed
+
+- Bump `miniz_oxide` from 0.8 to 0.9 (the version carried in the Debian
+  archive) and `sha2` (dev-dependency, oracle tests only) from 0.10 to 0.11.
+  Both are dependency alignments with no functional change; the gzip oracle
+  test still reads fixtures byte-exact.
+
 ## [0.1.1] - 2026-06-08
 
 ### Changed
