@@ -11,7 +11,7 @@ use crate::{
     file::with_decoder,
     phys::{Dnode, DslDataSet, DslDirectory, EndianOrder},
     vdev::Topology,
-    walk::{read_object_dnode, read_objset, zap_entries, zap_lookup},
+    walk::{read_object, read_object_dnode, read_objset, zap_entries, zap_lookup},
 };
 
 /// Object 1 of the MOS — the object directory (a ZAP) mapping pool-level names.
@@ -33,8 +33,8 @@ fn dsl_dir<R: BlockRead>(
     obj: u64,
     order: EndianOrder,
 ) -> Result<DslDirectory> {
-    let dnode = read_object_dnode(members, topo, mos, obj, order)?;
-    with_decoder(dnode.bonus_used(), order, DslDirectory::from_decoder).map_err(|_| {
+    let object = read_object(members, topo, mos, obj, order)?;
+    with_decoder(&object.bonus, order, DslDirectory::from_decoder).map_err(|_| {
         Error::Inconsistent {
             token: "dsl_dir",
             where_: Location::Dsl { obj },
@@ -71,14 +71,13 @@ pub(crate) fn open_dataset<R: BlockRead>(
     let ds_obj = dir.head_dataset_obj.ok_or(Error::NotFound {
         component: "head_dataset",
     })?;
-    let ds_dnode = read_object_dnode(members, topo, mos, ds_obj, order)?;
-    let ds =
-        with_decoder(ds_dnode.bonus_used(), order, DslDataSet::from_decoder).map_err(|_| {
-            Error::Inconsistent {
-                token: "dsl_dataset",
-                where_: Location::Dsl { obj: ds_obj },
-            }
-        })?;
+    let ds_object = read_object(members, topo, mos, ds_obj, order)?;
+    let ds = with_decoder(&ds_object.bonus, order, DslDataSet::from_decoder).map_err(|_| {
+        Error::Inconsistent {
+            token: "dsl_dataset",
+            where_: Location::Dsl { obj: ds_obj },
+        }
+    })?;
     let bp = ds.block_pointer.ok_or(Error::Inconsistent {
         token: "dataset_no_bp",
         where_: Location::Dsl { obj: ds_obj },

@@ -55,6 +55,15 @@ pub(crate) enum Topology {
 }
 
 impl Topology {
+    /// Every member index in the topology (present members only, for raidz).
+    pub(crate) fn members(&self) -> Vec<usize> {
+        match self {
+            Topology::Single(idx) => vec![*idx],
+            Topology::Mirror(children) => children.clone(),
+            Topology::RaidZ1 { children, .. } => children.iter().flatten().copied().collect(),
+        }
+    }
+
     /// Member indices that physically hold a DVA's data, in read-try order
     /// (single + mirror only; raidz takes the dedicated column path).
     fn read_order(&self) -> &[usize] {
@@ -105,6 +114,20 @@ pub(crate) fn read_block_pointer<R: BlockRead>(
                     token: "bp_bad_psize",
                     where_: Location::Mos,
                 });
+            }
+            for dva in r.dvas.iter().flatten() {
+                // A gang block's DVA points at a gang header, not the data.
+                if dva.is_gang {
+                    return Err(Error::Unsupported("gang_block"));
+                }
+                // The pool has one top-level vdev (import refuses more), so
+                // any other vdev id is corrupt.
+                if dva.vdev != 0 {
+                    return Err(Error::Inconsistent {
+                        token: "dva_vdev",
+                        where_: Location::Mos,
+                    });
+                }
             }
             // RAID-Z stripes data across columns — a dedicated assembly path.
             if let Topology::RaidZ1 { children, ashift } = topo {

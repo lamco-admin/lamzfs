@@ -149,10 +149,11 @@ fn single_lz4_read_dir_lists_catalog() {
     let window = zfs.read_at(&path, &["big.bin"], 4096, 256).unwrap();
     assert_eq!(window, &full[4096..4096 + 256]);
     // A read past EOF clamps to empty.
-    assert!(zfs
-        .read_at(&path, &["big.bin"], full.len() as u64 + 10, 16)
-        .unwrap()
-        .is_empty());
+    assert_eq!(
+        zfs.read_at(&path, &["big.bin"], full.len() as u64 + 10, 16)
+            .unwrap(),
+        Vec::<u8>::new()
+    );
 }
 
 #[test]

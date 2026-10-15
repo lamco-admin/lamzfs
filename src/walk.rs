@@ -4,7 +4,7 @@
 //! dnode array, and look up names in a (micro) ZAP. These are the steps the MOS
 //! and DSL walks compose.
 
-use alloc::{string::String, vec::Vec};
+use alloc::{string::String, vec, vec::Vec};
 
 use crate::{
     block_read::{BlockRead, PoolMember},
@@ -27,9 +27,31 @@ const ZAP_LEAF_CHUNK_SIZE: usize = 24;
 /// Upper bound on leaf blocks scanned in one fat ZAP (denial-of-boot guard).
 const MAX_ZAP_LEAF_BLOCKS: u64 = 1 << 20;
 
-/// On-disk dnode size; object `n`'s dnode lives at byte `n * 512` of the dnode
-/// array (the object set's meta-dnode data).
+/// On-disk dnode slot size; object `n`'s dnode starts at byte `n * 512` of the
+/// dnode array (the object set's meta-dnode data). A large dnode
+/// (`dnodesize=auto` and up) fills `dn_extra_slots` more slots after its own.
 const DNODE_SIZE: u64 = 512;
+/// `DNODE_MAX_SIZE` is 16 KiB: at most 32 slots.
+const DNODE_MAX_SLOTS: u64 = 32;
+/// The dnode header before the block pointers (`DNODE_CORE_SIZE`).
+const DNODE_HEADER_SIZE: usize = 64;
+const BLKPTR_SIZE: usize = 128;
+/// Header byte offsets (`dnode_phys_t`).
+const DN_NBLKPTR: usize = 3;
+const DN_FLAGS: usize = 7;
+const DN_BONUSLEN: usize = 10;
+const DN_EXTRA_SLOTS: usize = 12;
+/// `DNODE_FLAG_SPILL_BLKPTR`: a spill block pointer fills the dnode's last
+/// 128 bytes.
+const DNODE_FLAG_SPILL_BLKPTR: u8 = 1 << 2;
+
+/// An object's dnode and its whole bonus buffer. For a large dnode the bonus
+/// runs past the first 512-byte slot, so [`Dnode::bonus_used`] doesn't hold it;
+/// read the bonus from here.
+pub(crate) struct ObjectDnode {
+    pub dnode: Dnode,
+    pub bonus: Vec<u8>,
+}
 
 /// Read and decode the object set rooted at `bp` (the value is owned — the meta
 /// dnode's pointers/bonus are copied out of the decode buffer).
@@ -46,7 +68,8 @@ pub(crate) fn read_objset<R: BlockRead>(
     })
 }
 
-/// Read object `objnum`'s dnode out of `dnode_array` (an object set's meta-dnode).
+/// Read object `objnum`'s dnode out of `dnode_array` (an object set's
+/// meta-dnode), for its block pointers. Use [`read_object`] for its bonus.
 pub(crate) fn read_object_dnode<R: BlockRead>(
     members: &mut [PoolMember<R>],
     topo: &Topology,
@@ -54,13 +77,27 @@ pub(crate) fn read_object_dnode<R: BlockRead>(
     objnum: u64,
     order: EndianOrder,
 ) -> Result<Dnode> {
+    Ok(read_object(members, topo, dnode_array, objnum, order)?.dnode)
+}
+
+/// Read object `objnum`'s dnode and whole bonus buffer out of `dnode_array`.
+pub(crate) fn read_object<R: BlockRead>(
+    members: &mut [PoolMember<R>],
+    topo: &Topology,
+    dnode_array: &Dnode,
+    objnum: u64,
+    order: EndianOrder,
+) -> Result<ObjectDnode> {
+    let inconsistent = |token| Error::Inconsistent {
+        token,
+        where_: Location::Dnode { obj: objnum },
+    };
     // `objnum` can be a raw ZAP value (a DSL object number), so guard the
     // byte-offset multiply against wrap on a hostile value.
-    let byte_off = objnum.checked_mul(DNODE_SIZE).ok_or(Error::Inconsistent {
-        token: "dnode_obj_overflow",
-        where_: Location::Dnode { obj: objnum },
-    })?;
-    let buf = read_dnode_range(
+    let byte_off = objnum
+        .checked_mul(DNODE_SIZE)
+        .ok_or_else(|| inconsistent("dnode_obj_overflow"))?;
+    let first = read_dnode_range(
         members,
         topo,
         dnode_array,
@@ -68,7 +105,51 @@ pub(crate) fn read_object_dnode<R: BlockRead>(
         DNODE_SIZE as usize,
         order,
     )?;
-    with_decoder(&buf, order, Dnode::from_decoder)
+    let extra_slots = u64::from(first[DN_EXTRA_SLOTS]);
+    if extra_slots == 0 {
+        let dnode = decode_dnode(&first, objnum, order)?;
+        let bonus = dnode.bonus_used().to_vec();
+        return Ok(ObjectDnode { dnode, bonus });
+    }
+
+    // A large dnode never crosses its dnode block.
+    let slots = extra_slots + 1;
+    let block_slots = (u64::from(dnode_array.data_block_size_sectors) << 9) / DNODE_SIZE;
+    if slots > DNODE_MAX_SLOTS || block_slots == 0 || objnum % block_slots + slots > block_slots {
+        return Err(inconsistent("dnode_slots"));
+    }
+    let size = (slots * DNODE_SIZE) as usize;
+    let full = read_dnode_range(members, topo, dnode_array, byte_off, size, order)?;
+
+    let nblkptr = usize::from(full[DN_NBLKPTR]);
+    let spill = full[DN_FLAGS] & DNODE_FLAG_SPILL_BLKPTR != 0;
+    let len_bytes = [full[DN_BONUSLEN], full[DN_BONUSLEN + 1]];
+    let bonus_len = usize::from(match order {
+        EndianOrder::Big => u16::from_be_bytes(len_bytes),
+        EndianOrder::Little => u16::from_le_bytes(len_bytes),
+    });
+    let bonus_start = DNODE_HEADER_SIZE + nblkptr * BLKPTR_SIZE;
+    let bonus_room = size - if spill { BLKPTR_SIZE } else { 0 };
+    if bonus_start > DNODE_SIZE as usize || bonus_start + bonus_len > bonus_room {
+        return Err(inconsistent("dnode_bonus_len"));
+    }
+
+    // The header and block pointers sit where a 512-byte dnode has them, so
+    // the 512-byte decoder reads them once the bonus length and spill flag
+    // (whose pointer isn't in this slot) are cleared.
+    let mut slot0 = vec![0u8; DNODE_SIZE as usize];
+    slot0[..bonus_start].copy_from_slice(&full[..bonus_start]);
+    slot0[DN_FLAGS] &= !DNODE_FLAG_SPILL_BLKPTR;
+    slot0[DN_BONUSLEN] = 0;
+    slot0[DN_BONUSLEN + 1] = 0;
+    let dnode = decode_dnode(&slot0, objnum, order)?;
+    let bonus = full[bonus_start..bonus_start + bonus_len].to_vec();
+    Ok(ObjectDnode { dnode, bonus })
+}
+
+/// Decode one 512-byte dnode slot.
+fn decode_dnode(buf: &[u8], objnum: u64, order: EndianOrder) -> Result<Dnode> {
+    with_decoder(buf, order, Dnode::from_decoder)
         .map_err(|_| Error::Inconsistent {
             token: "dnode_decode",
             where_: Location::Dnode { obj: objnum },

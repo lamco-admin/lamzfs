@@ -387,6 +387,23 @@ impl TryFrom<u32> for NvDataType {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+/// Is `data_type` an array of fixed-width elements (the types XDR encodes with
+/// `xdr_array`, an element count in front of the elements)?
+fn is_fixed_width_array(data_type: NvDataType) -> bool {
+    matches!(
+        data_type,
+        NvDataType::BooleanArray
+            | NvDataType::Int8Array
+            | NvDataType::Uint8Array
+            | NvDataType::Int16Array
+            | NvDataType::Uint16Array
+            | NvDataType::Int32Array
+            | NvDataType::Uint32Array
+            | NvDataType::Int64Array
+            | NvDataType::Uint64Array
+    )
+}
+
 /** Checks the [`NvDataType`] and count are valid, and computes the array size.
  *
  * NOTE: The array size will be 0 for non-array types, as well as
@@ -644,6 +661,23 @@ impl<'a> NvListIterator<'a, '_> {
         // Check count and get array size.
         let array_value_size = check_data_type_count_and_get_array_size(data_type, element_count)?;
 
+        // lamzfs: XDR encodes a fixed-width array as an element count followed
+        // by the elements (xdr_array), so the elements start 4 bytes in. Without
+        // this, any label holding one (raidz_expand_txgs, after a RAID-Z
+        // expansion) failed to decode with InvalidEncodedSize.
+        let array_offset = if is_fixed_width_array(data_type) {
+            let prefix = self.decoder.get_usize_32()?;
+            if prefix != element_count {
+                return Err(NvDecodeError::InvalidCount {
+                    data_type,
+                    count: prefix,
+                });
+            }
+            self.decoder.offset()
+        } else {
+            value_offset
+        };
+
         // Decode data value.
         let value = match data_type {
             NvDataType::Boolean => NvDataValue::Boolean(),
@@ -661,7 +695,7 @@ impl<'a> NvListIterator<'a, '_> {
 
                 NvArray {
                     data: self.list.data,
-                    offset: value_offset,
+                    offset: array_offset,
                     length: array_value_size,
                     count: element_count,
                     order: self.list.order,
@@ -675,7 +709,7 @@ impl<'a> NvListIterator<'a, '_> {
 
                 NvArray {
                     data: self.list.data,
-                    offset: value_offset,
+                    offset: array_offset,
                     length: array_value_size,
                     count: element_count,
                     order: self.list.order,
@@ -688,7 +722,7 @@ impl<'a> NvListIterator<'a, '_> {
 
                 NvArray {
                     data: self.list.data,
-                    offset: value_offset,
+                    offset: array_offset,
                     length: array_value_size,
                     count: element_count,
                     order: self.list.order,
@@ -701,7 +735,7 @@ impl<'a> NvListIterator<'a, '_> {
 
                 NvArray {
                     data: self.list.data,
-                    offset: value_offset,
+                    offset: array_offset,
                     length: array_value_size,
                     count: element_count,
                     order: self.list.order,
@@ -714,7 +748,7 @@ impl<'a> NvListIterator<'a, '_> {
 
                 NvArray {
                     data: self.list.data,
-                    offset: value_offset,
+                    offset: array_offset,
                     length: array_value_size,
                     count: element_count,
                     order: self.list.order,
@@ -727,7 +761,7 @@ impl<'a> NvListIterator<'a, '_> {
 
                 NvArray {
                     data: self.list.data,
-                    offset: value_offset,
+                    offset: array_offset,
                     length: array_value_size,
                     count: element_count,
                     order: self.list.order,
@@ -781,7 +815,7 @@ impl<'a> NvListIterator<'a, '_> {
 
                 NvArray {
                     data: self.list.data,
-                    offset: value_offset,
+                    offset: array_offset,
                     length: array_value_size,
                     count: element_count,
                     order: self.list.order,
@@ -794,7 +828,7 @@ impl<'a> NvListIterator<'a, '_> {
 
                 NvArray {
                     data: self.list.data,
-                    offset: value_offset,
+                    offset: array_offset,
                     length: array_value_size,
                     count: element_count,
                     order: self.list.order,
@@ -807,7 +841,7 @@ impl<'a> NvListIterator<'a, '_> {
 
                 NvArray {
                     data: self.list.data,
-                    offset: value_offset,
+                    offset: array_offset,
                     length: array_value_size,
                     count: element_count,
                     order: self.list.order,
@@ -1473,8 +1507,14 @@ impl NvList<'_> {
         order: EndianOrder,
     ) -> Result<NvList<'_>, NvDecodeError> {
         // Check encoding.
+        // lamzfs: Labels are always XDR. A native-encoded list was a todo!()
+        // here, so one byte of a crafted label panicked the reader; refuse it.
         match encoding {
-            NvEncoding::Native => todo!("Implement Native decoding"),
+            NvEncoding::Native => {
+                return Err(NvDecodeError::UnknownEncoding {
+                    encoding: NvEncoding::Native as u8,
+                })
+            }
             NvEncoding::Xdr => (),
         }
 
@@ -2176,5 +2216,73 @@ impl error::Error for NvDecodeError {
             NvDecodeError::BinaryDecoder { err } => Some(err),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod lamzfs_tests {
+    use super::*;
+
+    /// An XDR nvlist with one `u64` array pair: `name` -> `values`.
+    fn xdr_u64_array_list(name: &str, values: &[u64]) -> alloc::vec::Vec<u8> {
+        let mut pair = alloc::vec::Vec::new();
+        let padded = (name.len() + 3) & !3;
+        pair.extend_from_slice(&(name.len() as u32).to_be_bytes());
+        pair.extend_from_slice(name.as_bytes());
+        pair.resize(4 + padded, 0);
+        pair.extend_from_slice(&(NvDataType::Uint64Array as u32).to_be_bytes());
+        pair.extend_from_slice(&(values.len() as u32).to_be_bytes());
+        // xdr_array: the element count, then the elements.
+        pair.extend_from_slice(&(values.len() as u32).to_be_bytes());
+        for v in values {
+            pair.extend_from_slice(&v.to_be_bytes());
+        }
+        let size = (8 + pair.len()) as u32;
+        let mut out = alloc::vec![1u8, 1, 0, 0];
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&1u32.to_be_bytes());
+        out.extend_from_slice(&size.to_be_bytes());
+        out.extend_from_slice(&size.to_be_bytes());
+        out.extend_from_slice(&pair);
+        out.extend_from_slice(&[0u8; 8]);
+        out
+    }
+
+    /// A RAID-Z vdev's `raidz_expand_txgs` is a `u64` array. Before the count
+    /// prefix was consumed, its pair decoded as 4 bytes short.
+    #[test]
+    fn xdr_u64_array_decodes_after_its_count() {
+        let bytes = xdr_u64_array_list("raidz_expand_txgs", &[40, 77]);
+        let list = NvList::from_bytes(&bytes).unwrap();
+        let pair = list.into_iter().next().unwrap().unwrap();
+        assert_eq!(pair.name, "raidz_expand_txgs");
+        let values: alloc::vec::Vec<u64> = pair
+            .get_u64_array()
+            .unwrap()
+            .into_iter()
+            .map(|v| v.unwrap())
+            .collect();
+        assert_eq!(values, [40, 77]);
+    }
+
+    /// A count prefix that disagrees with the pair's element count is refused.
+    #[test]
+    fn xdr_array_count_mismatch_is_refused() {
+        let mut bytes = xdr_u64_array_list("a", &[1]);
+        // The prefix sits after header (12), sizes (8), name (8), type, count.
+        let prefix = 12 + 8 + 8 + 4 + 4;
+        bytes[prefix..prefix + 4].copy_from_slice(&2u32.to_be_bytes());
+        let list = NvList::from_bytes(&bytes).unwrap();
+        assert!(list.into_iter().next().unwrap().is_err());
+    }
+
+    #[test]
+    fn native_encoding_is_refused_not_a_panic() {
+        let mut bytes = xdr_u64_array_list("a", &[1]);
+        bytes[0] = 0;
+        assert!(matches!(
+            NvList::from_bytes(&bytes),
+            Err(NvDecodeError::UnknownEncoding { .. })
+        ));
     }
 }

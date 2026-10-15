@@ -67,6 +67,10 @@ pub struct UberBlock {
     /// Zpool checkpoint transaction group.
     pub checkpoint_txg: u64,
 
+    /// RAID-Z expansion progress (`ub_raidz_reflow_info`, OpenZFS 2.3);
+    /// non-zero while an expansion is moving data.
+    pub raidz_reflow_info: u64,
+
     /// Endian order.
     pub order: EndianOrder,
 
@@ -283,6 +287,12 @@ impl UberBlock {
         let checkpoint_txg = decoder.get_u64()?;
 
         ////////////////////////////////
+        // Decode RAID-Z reflow info (lamzfs: OpenZFS 2.3 added it after the
+        // checkpoint txg; requiring zeroes here skipped every uberblock written
+        // during an expansion, so an older txg won).
+        let raidz_reflow_info = decoder.get_u64()?;
+
+        ////////////////////////////////
         // Check that the rest of the uber block (up to the checksum at the
         // tail) is all zeroes.
         let rest_size = match decoder.len().checked_sub(ChecksumTail::SIZE) {
@@ -304,6 +314,7 @@ impl UberBlock {
         // Success.
         Ok(Some(UberBlock {
             checkpoint_txg,
+            raidz_reflow_info,
             order: decoder.order(),
             guid_sum,
             mmp,
@@ -363,6 +374,10 @@ impl UberBlock {
         ////////////////////////////////
         // Encode checkpoint transaction group.
         encoder.put_u64(self.checkpoint_txg)?;
+
+        ////////////////////////////////
+        // Encode RAID-Z reflow info.
+        encoder.put_u64(self.raidz_reflow_info)?;
 
         ////////////////////////////////
         // Encode padding.

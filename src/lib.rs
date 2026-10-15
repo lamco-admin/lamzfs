@@ -273,14 +273,14 @@ impl<R: BlockRead> Zfs<R> {
             dataset::resolve_path(&mut self.members, &self.pool.topology, &ds, order, path)?;
         let kind = dirent_kind(value);
         let size = if kind == EntryKind::Regular {
-            let dnode = walk::read_object_dnode(
+            let object = walk::read_object(
                 &mut self.members,
                 &self.pool.topology,
                 &ds.meta_dnode,
                 obj,
                 order,
             )?;
-            dataset::sa_file_size(dnode.bonus_used(), order)?
+            dataset::sa_file_size(&object.bonus, order)?
         } else {
             0
         };
@@ -398,15 +398,15 @@ impl<R: BlockRead> Zfs<R> {
         if dirent_kind(value) != EntryKind::Regular {
             return Err(Error::NotARegularFile);
         }
-        let dnode = walk::read_object_dnode(
+        let object = walk::read_object(
             &mut self.members,
             &self.pool.topology,
             &ds.meta_dnode,
             obj,
             order,
         )?;
-        let size = dataset::sa_file_size(dnode.bonus_used(), order)?;
-        Ok((dnode, size))
+        let size = dataset::sa_file_size(&object.bonus, order)?;
+        Ok((object.dnode, size))
     }
 }
 

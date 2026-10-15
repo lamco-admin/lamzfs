@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-15
+
+### Fixed
+
+- **A stale mirror member could win.** The active uberblock came from member
+  0's first label only, so a mirror whose member 0 missed the last writes read
+  as the older tree, with no error. It's now chosen from all four labels of
+  every member, as ZFS does.
+- **Pools with several top-level vdevs imported and read through member 0.**
+  A stripe (Proxmox's RAID0) or a pool with log or special vdevs is now refused
+  with `topo_multi_toplevel`, as the spec always said; a DVA naming any vdev
+  but 0 is `dva_vdev`.
+- **No pool feature gate.** Active read features are now checked twice: In the
+  label before the MOS is read, and in the MOS `features_for_read` set after.
+  Features lamzfs doesn't implement are refused by name (`raidz_expansion`,
+  `longname`, `device_removal`, `draid`, `dynamic_gang_header`,
+  `redacted_datasets`, `redaction_list_spill`) or as
+  `feat_unknown_read_incompat`.
+- **RAID-Z expansion.** An expanded RAID-Z keeps old blocks at their old
+  width; such a pool is refused as `raidz_expansion`. Its label didn't decode
+  at all before: The vendored nvlist decoder missed XDR's element count in
+  front of every fixed-width array.
+- **A native-encoded nvlist in a label panicked** (a `todo!()`); it's refused
+  as an unknown encoding.
+- **Uberblocks written during a RAID-Z expansion were skipped** (their
+  `ub_raidz_reflow_info` wasn't decoded), which could select an older txg.
+- **Gang blocks** are refused as `gang_block` instead of failing their
+  checksum.
+
+### Added
+
+- **Large dnodes** (`dnodesize=auto` and up, Ubuntu's rpool): A file whose
+  system-attribute bonus doesn't fit a 512-byte dnode used to fail with
+  `dnode_decode`.
+- **SHA-512 checksums** (OpenZFS's SHA-512/256), behind the new default
+  `sha512` feature, which brings in `sha2` 0.11.
+- Installer-shaped fixtures built by OpenZFS through the kernel module
+  (`tests/fixtures/regen-installer.sh`): Proxmox VE's rpool, Ubuntu's rpool and
+  bpool, a SHA-512 dataset, a stale mirror member, gang blocks, an encrypted
+  sibling dataset, and the refused stripe, expanded RAID-Z and longname pools.
+  Eight of the ten tests fail on 0.1.2.
+
+### Changed
+
+- `ruzstd` 0.8 to 0.9.1, which fixes RUSTSEC-2026-0344.
+- CI runs weekly as well, and builds the library for `x86_64-unknown-uefi`.
+- The README says the crate is MIT (the vendored rzfs decoders are MIT only),
+  links the LamBoot site and docs, and LICENSE-APACHE carries the full license
+  text.
+
 ## [0.1.2] - 2026-08-19
 
 ### Changed

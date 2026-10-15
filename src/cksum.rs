@@ -5,7 +5,8 @@
 //! possibly compressed) bytes in `bp.cksum`. After reading those bytes,
 //! [`verify_block`] recomputes the checksum with the algorithm the pointer names
 //! and compares — a mismatch is corruption (and, for a mirror, the trigger to
-//! try another child). Scalar Fletcher-2/4 + SHA-256 only (no SIMD), per §5.1.
+//! try another child). Scalar Fletcher-2/4, SHA-256 and (with the `sha512`
+//! feature) SHA-512/256, no SIMD, per §5.1.
 
 use crate::{
     checksum::{
@@ -22,8 +23,27 @@ pub(crate) fn checksum_name(kind: ChecksumType) -> &'static str {
         ChecksumType::Fletcher2 => "csum_fletcher2",
         ChecksumType::Fletcher4 => "csum_fletcher4",
         ChecksumType::Sha256 | ChecksumType::Label => "csum_sha256",
+        ChecksumType::Sha512_256 => "csum_sha512",
         _ => "csum_unsupported",
     }
+}
+
+/// OpenZFS's `sha512` is SHA-512/256. Unlike SHA-256, which it stores as
+/// big-endian words, it copies the digest bytes straight into the checksum
+/// words, so they read in the byte order the block pointer was written in.
+#[cfg(feature = "sha512")]
+fn sha512_256_words(data: &[u8], order: EndianOrder) -> [u64; 4] {
+    use sha2::{Digest as _, Sha512_256};
+    let digest = Sha512_256::digest(data);
+    let mut words = [0u64; 4];
+    for (word, chunk) in words.iter_mut().zip(digest.chunks_exact(8)) {
+        let bytes: [u8; 8] = chunk.try_into().unwrap_or([0; 8]);
+        *word = match order {
+            EndianOrder::Big => u64::from_be_bytes(bytes),
+            EndianOrder::Little => u64::from_le_bytes(bytes),
+        };
+    }
+    words
 }
 
 /// Verify `data`'s checksum against `expected`, using algorithm `kind` in byte
@@ -58,6 +78,8 @@ pub(crate) fn verify_block(
             .map_err(init)?
             .hash(data, order)
             .map_err(init)?,
+        #[cfg(feature = "sha512")]
+        ChecksumType::Sha512_256 => sha512_256_words(data, order),
         other => return Err(Error::UnsupportedFeature(checksum_name(other))),
     };
     if computed == expected.words {

@@ -6,14 +6,14 @@
 
 [package]
 name = "lamzfs"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 authors = [
     "Greg Lamberson <greg@lamco.io>",
     "Lamco Development LLC <office@lamco.io>",
 ]
 license = "MIT"
-description = "no_std read-only ZFS reader for UEFI bootloaders (single/mirror/raidz1, unencrypted bpool)"
+description = "Read-only no_std ZFS pool reader for UEFI bootloaders (single disk, mirror, RAID-Z1), from Lamco Development LLC"
 repository = "https://github.com/lamco-admin/lamzfs"
 homepage = "https://lamco.ai/products/lamboot/"
 readme = "README.md"
@@ -34,13 +34,16 @@ include = [
 # Per-block decompressors (all permissive, no_std, feature-gated). ZFS LZJB is
 # carried from the vendored rzfs fork; these cover the rest of the on-disk set.
 lz4_flex = { version = "0.13", default-features = false, features = ["safe-decode"], optional = true }
-ruzstd = { version = "0.8", default-features = false, optional = true }
+ruzstd = { version = "0.9.1", default-features = false, optional = true }
 miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"], optional = true }
+# SHA-512/256 for datasets set to checksum=sha512 (the other algorithms are
+# scalar code vendored from rzfs).
+sha2 = { version = "0.11", default-features = false, optional = true }
 
 [dev-dependencies]
 # Oracle tests: decompress the committed .img.zst fixtures, hash file contents,
 # and read the MANIFEST. All test-only (not shipped).
-ruzstd = "0.8"
+ruzstd = "0.9.1"
 sha2 = "0.11"
 serde_json = "1"
 
@@ -52,7 +55,7 @@ serde_json = "1"
 doctest = false
 
 [features]
-default = ["lz4", "zstd", "gzip", "lzjb", "mirror"]
+default = ["lz4", "zstd", "gzip", "lzjb", "mirror", "sha512"]
 std = []
 
 # Per-codec gates (SPEC-LAMZFS §10). `off` and `zle` are always compiled.
@@ -61,6 +64,8 @@ zstd = ["dep:ruzstd"]
 gzip = ["dep:miniz_oxide"]
 lzjb = []
 mirror = []
+# SHA-512/256 checksums (checksum=sha512 datasets).
+sha512 = ["dep:sha2"]
 
 # NOTE: the vendored rzfs subtree gates SIMD-accelerated checksums behind feature
 # names like `sha256-avx2` / `fletcher4-avx512f`. lamzfs deliberately does NOT

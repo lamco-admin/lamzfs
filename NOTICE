@@ -30,6 +30,16 @@ SIMD-accelerated checksum paths, the `arch` CPUID dispatch, and the
 `exe`/`fuse`/`module` crates are not vendored — lamzfs is scalar-only and
 `#![forbid(unsafe_code)]`.
 
+CHANGES TO VENDORED FILES
+-------------------------
+Each is marked with a `lamzfs:` comment at the change.
+
+- src/phys/nv.rs (0.1.3): XDR fixed-width arrays are read after their element
+  count, so a label holding one (raidz_expand_txgs) decodes; a native-encoded
+  list returns UnknownEncoding instead of reaching todo!().
+- src/phys/uberblock.rs (0.1.3): ub_raidz_reflow_info (OpenZFS 2.3) is decoded
+  instead of being required to be zero.
+
 WHAT IS NEW lamzfs CODE (MIT OR Apache-2.0)
 -------------------------------------------
 All other files — the pool import, vdev topology + DVA routing, dataset walk,
@@ -44,6 +54,6 @@ Because the vendored subtree is MIT-only, the crate's effective floor license is
 Apache-2.0 per their SPDX headers. Microsoft Secure Boot signing accepts MIT; no
 GPL code is linked.
 
-The third-party decompressors lamzfs depends on at build time (`lz4_flex`,
-`ruzstd`, `miniz_oxide`) are each permissive (MIT / MIT-or-Apache / Zlib) and
-carry their own notices.
+The third-party crates lamzfs depends on at build time (`lz4_flex`, `ruzstd`,
+`miniz_oxide`, and `sha2` for SHA-512) are each permissive (MIT /
+MIT-or-Apache / Zlib) and carry their own notices.
