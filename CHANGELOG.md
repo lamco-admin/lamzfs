@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-15
+
+### Added
+
+- **BLAKE3 checksums.** OpenZFS keys BLAKE3 with the pool's checksum salt (a
+  32-byte value in the MOS object directory); lamzfs reads the salt at import
+  and verifies BLAKE3 data and metadata blocks. It's behind the new default
+  `blake3` feature, which uses the `blake3` crate in portable Rust. A dataset
+  set to `checksum=blake3` was refused as `csum_unsupported` before.
+- **Names over 255 bytes** (`longname`, OpenZFS 2.3) read like any other name;
+  they live in fat ZAPs, which lamzfs already reads. The pool feature was
+  refused before.
+
+### Changed
+
+- Skein and Edon-R blocks are refused as `csum_skein` and `csum_edonr`
+  instead of `csum_unsupported`. Both are keyed with the pool's salt, and no
+  permissive Rust implementation of either offers a keyed mode.
+- A fat-ZAP value can be read as raw bytes, not only as one integer.
+
+### Testing
+
+- Three kernel-built fixtures: A pool checksummed with BLAKE3 throughout, a
+  pool with a 300-byte file name and a 1,000-byte directory name, and Skein
+  and Edon-R datasets beside a readable `/boot`. All three tests fail on
+  0.1.3; the long-name pool replaces the old refusal fixture.
+
 ## [0.1.3] - 2026-10-15
 
 ### Fixed

@@ -275,15 +275,53 @@ build_raidz_expanded() {
   export_and_record "$name" "$pool" boot "refuse:raidz_expansion" "${imgs[@]}"
 }
 
-# A name longer than 255 bytes (longname active).
+# Names longer than 255 bytes (longname active): a 300-byte file name and a
+# 1,000-byte directory name holding a file, both in fat ZAPs.
 build_longname() {
-  local name=refuse_longname pool=lamzi_long
+  local name=longname pool=lamzi_long
   mapfile -t imgs < <(make_images 1 128M)
   sudo zpool create -f -o cachefile=none -o ashift=12 -R "$ALTROOT" -O mountpoint=none "$pool" "${imgs[@]}"
   sudo zfs create -o mountpoint=/boot -o longname=on "$pool/boot"
+  local root="$ALTROOT/boot" long300 long1000
+  populate "$root" "$name"
+  long300="$(python3 -c "print('n'*300)")"
+  long1000="$(python3 -c "print('d'*1000)")"
+  printf 'a 300-byte name\n' > "$root/$long300"
+  mkdir "$root/$long1000"
+  printf 'under a 1000-byte directory name\n' > "$root/$long1000/inner.conf"
+  add_file "$name" "$long300"
+  add_file "$name" "$long1000/inner.conf"
+  hash_files "$root" "$name"
+  export_and_record "$name" "$pool" boot read "${imgs[@]}"
+}
+
+# BLAKE3 checksums: the pool's root dataset and everything under it
+# (checksum=blake3 is inherited), so metadata uses it too.
+build_blake3() {
+  local name=blake3_boot pool=lamzi_blake3
+  mapfile -t imgs < <(make_images 1 128M)
+  sudo zpool create -f -o cachefile=none -o ashift=12 -R "$ALTROOT" -O mountpoint=none \
+    -O checksum=blake3 -O compression=lz4 "$pool" "${imgs[@]}"
+  sudo zfs create -o mountpoint=/boot "$pool/boot"
+  local root="$ALTROOT/boot"
+  populate "$root" "$name"
+  hash_files "$root" "$name"
+  export_and_record "$name" "$pool" boot read "${imgs[@]}"
+}
+
+# Skein and Edon-R datasets beside a readable /boot: Their blocks are refused
+# one by one (csum_skein, csum_edonr), and /boot still reads.
+build_skein_edonr() {
+  local name=skein_edonr pool=lamzi_salted
+  mapfile -t imgs < <(make_images 1 128M)
+  sudo zpool create -f -o cachefile=none -o ashift=12 -R "$ALTROOT" -O mountpoint=none "$pool" "${imgs[@]}"
+  sudo zfs create -o mountpoint=/boot "$pool/boot"
   populate "$ALTROOT/boot" "$name"
-  touch "$ALTROOT/boot/$(python3 -c "print('n'*300)")"
-  export_and_record "$name" "$pool" boot "refuse:longname" "${imgs[@]}"
+  hash_files "$ALTROOT/boot" "$name"
+  sudo zfs create -o mountpoint=/skein -o checksum=skein "$pool/skein"
+  sudo zfs create -o mountpoint=/edonr -o checksum=edonr "$pool/edonr"
+  head -c 65536 /dev/urandom | sudo tee "$ALTROOT/skein/s.bin" "$ALTROOT/edonr/e.bin" >/dev/null
+  export_and_record "$name" "$pool" boot read "${imgs[@]}"
 }
 
 # An unencrypted /boot dataset beside an encrypted one (encryption active).
@@ -302,7 +340,7 @@ build_encrypted() {
   export_and_record "$name" "$pool" boot read "${imgs[@]}"
 }
 
-for b in ${ONLY:-proxmox ubuntu_rpool ubuntu_bpool sha512 mirror_stale gang stripe raidz_expanded longname encrypted}; do
+for b in ${ONLY:-proxmox ubuntu_rpool ubuntu_bpool sha512 mirror_stale gang stripe raidz_expanded longname encrypted blake3 skein_edonr}; do
   "build_$b"
 done
 

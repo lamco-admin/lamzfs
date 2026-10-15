@@ -191,9 +191,35 @@ fn raidz_expansion_is_refused() {
     refusal("refuse_raidz_expanded");
 }
 
+/// Names longer than 255 bytes (OpenZFS 2.3 `longname`): a 300-byte file name
+/// and a file under a 1,000-byte directory name read like any other.
 #[test]
-fn longname_is_refused() {
-    refusal("refuse_longname");
+fn long_names_read() {
+    let mut zfs = read_every_file("longname");
+    let fx = fixture("longname");
+    let ds = components(fx["dataset"].as_str().unwrap());
+    let root = zfs.read_dir(&ds, &[]).unwrap();
+    assert!(root.iter().any(|e| e.name.len() == 300));
+    assert!(root
+        .iter()
+        .any(|e| e.name.len() == 1000 && e.kind == EntryKind::Directory));
+}
+
+/// BLAKE3 checksums on data and metadata, keyed with the pool's checksum salt.
+#[test]
+fn blake3_checksums_verify() {
+    read_every_file("blake3_boot");
+}
+
+/// Skein and Edon-R datasets are refused block by block with their own token;
+/// `/boot` beside them reads.
+#[test]
+fn skein_and_edonr_are_refused_per_dataset() {
+    let mut zfs = read_every_file("skein_edonr");
+    for (dataset, token) in [("skein", "csum_skein"), ("edonr", "csum_edonr")] {
+        let err = zfs.read_dir(&[dataset], &[]).unwrap_err();
+        assert_eq!(err.token(), token, "{dataset}: {err:?}");
+    }
 }
 
 /// An unencrypted `/boot` beside an encrypted dataset reads; the encrypted

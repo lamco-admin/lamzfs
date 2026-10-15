@@ -23,7 +23,7 @@ boot pool. **Read-only by construction**: There is no write path and no
 
 ## What it reads
 
-- **Topologies:** One top-level vdev: a single disk, a mirror, or a
+- **Topologies:** One top-level vdev: A single disk, a mirror, or a
   single-parity **RAID-Z1** (including degraded reads that rebuild a missing or
   corrupt column from parity). The active uberblock is chosen from all four
   labels of every member, so a mirror member that missed the last writes can't
@@ -33,10 +33,12 @@ boot pool. **Read-only by construction**: There is no write path and no
   `acltype=posixacl` and `normalization=formD`.
 - **Compression:** `off`, `zle`, `lzjb`, `lz4`, `gzip` and `zstd` (each a
   feature).
-- **Checksums:** Fletcher-2/4, SHA-256 and SHA-512 (OpenZFS's SHA-512/256).
-- The full read walk: vdev label, uberblock, MOS, DSL, dataset, ZPL, ZAP
-  directories (micro and fat), large dnodes, large blocks, and the indirect
-  block-pointer tree (sparse-file aware).
+- **Checksums:** Fletcher-2/4, SHA-256, SHA-512 (OpenZFS's SHA-512/256) and
+  BLAKE3 (keyed with the pool's checksum salt, as OpenZFS does).
+- The full read walk: The vdev label, uberblock, MOS, DSL, dataset, ZPL, ZAP
+  directories (micro and fat), names over 255 bytes (`longname`), large
+  dnodes, large blocks, and the indirect block-pointer tree (sparse-file
+  aware).
 
 ## What it refuses
 
@@ -46,14 +48,16 @@ never a wrong read:
 
 - **Active read features it doesn't implement**, checked in the label before
   the MOS is read and in the MOS `features_for_read` set after:
-  `raidz_expansion`, `longname`, `device_removal`, `draid`,
+  `raidz_expansion`, `device_removal`, `draid`,
   `dynamic_gang_header`, `redacted_datasets`, `redaction_list_spill`, and any
   feature it doesn't know (`feat_unknown_read_incompat`).
-- **Several top-level vdevs** (`topo_multi_toplevel`): a stripe such as
+- **Several top-level vdevs** (`topo_multi_toplevel`): A stripe such as
   Proxmox's RAID0, or a pool with log or special vdevs.
 - RAID-Z2/3 and dRAID, gang blocks (`gang_block`), and encrypted datasets
   (`encryption`; an unencrypted `/boot` beside them still reads).
-- Skein, Edon-R and BLAKE3 checksums, block by block.
+- Skein and Edon-R checksums, block by block (`csum_skein`, `csum_edonr`).
+  Both are keyed with the pool's salt, and no permissive Rust implementation
+  of either offers a keyed mode (Debian packages neither).
 
 ## Installation
 
@@ -75,6 +79,7 @@ lamzfs = "0.1"
 | `lz4`, `zstd`, `gzip`, `lzjb` | yes | That compression algorithm |
 | `mirror` | yes | Mirror topologies |
 | `sha512` | yes | SHA-512/256 checksums (`sha2`) |
+| `blake3` | yes | BLAKE3 checksums (`blake3`, portable Rust) |
 | `std` | no | `impl std::error::Error for Error` |
 
 For `x86_64-unknown-uefi`, build in release mode: `sha2` 0.11's x86 backend
@@ -121,7 +126,7 @@ sudo). Three fuzz targets live in `fuzz/`.
 
 The on-disk **decoders** are vendored from
 [rzfs](https://github.com/cybojanek/rzfs), electing the MIT half of its
-`GPL-2.0 OR MIT` dual license: a clean-room reader, not GPL kernel or userspace
+`GPL-2.0 OR MIT` dual license: A clean-room reader, not GPL kernel or userspace
 source. The orchestration (pool import, vdev routing, feature gate, dataset
 walk, path resolve, file read) is new `lamzfs` code. The crate is scalar-only
 and `#![forbid(unsafe_code)]`. See [`NOTICE`](NOTICE) for attribution.

@@ -10,8 +10,8 @@ use crate::{
     checksum::{Sha256, Sha256Implementation},
     error::{Error, LabelReason, Location, Result},
     phys::{Dnode, EndianOrder, LabelNvPairs, NvList, UberBlock},
-    vdev::Topology,
-    walk::{read_object_dnode, read_objset, zap_entries, zap_lookup},
+    vdev::{Layout, Topology},
+    walk::{read_object_dnode, read_objset, zap_entries, zap_lookup, zap_lookup_bytes},
 };
 
 /// Byte offset of the L0 NvPairs region from the start of a leaf device:
@@ -83,7 +83,7 @@ pub(crate) fn import<R: BlockRead>(members: &mut [PoolMember<R>]) -> Result<Impo
 
     // Decode member 0's config nvlist into owned values (the borrow of the label
     // buffer ends with this block).
-    let (pool_guid, pool_name, ashift, topology) = {
+    let (pool_guid, pool_name, ashift, mut topology) = {
         let buf = read_nvpairs(&mut members[0], &mut sha)?;
         let nvp = LabelNvPairs::from_bytes(&buf, L0_NVPAIRS_SECTOR, &mut sha)
             .map_err(|_| Error::BadLabel(LabelReason::BadChecksum))?;
@@ -110,7 +110,10 @@ pub(crate) fn import<R: BlockRead>(members: &mut [PoolMember<R>]) -> Result<Impo
         }
         let vtree = nv_nvlist(&config, "vdev_tree")?;
         let ashift = u8::try_from(nv_u64(&vtree, "ashift")?).unwrap_or(UBERBLOCK_SHIFT_MIN);
-        let topology = build_topology(&vtree, members, &mut sha)?;
+        let topology = Topology {
+            layout: build_topology(&vtree, members, &mut sha)?,
+            checksum_salt: None,
+        };
         (pool_guid, pool_name, ashift, topology)
     };
 
@@ -124,7 +127,9 @@ pub(crate) fn import<R: BlockRead>(members: &mut [PoolMember<R>]) -> Result<Impo
     // Read the MOS rooted at the active uberblock, in the pool's byte order.
     let order = uberblock.ptr.order();
     let mos = read_objset(members, &topology, &uberblock.ptr, order)?;
-    check_mos_features(members, &topology, &mos.dnode, order)?;
+    let objdir = read_object_dnode(members, &topology, &mos.dnode, MOS_OBJECT_DIRECTORY, order)?;
+    check_mos_features(members, &topology, &mos.dnode, &objdir, order)?;
+    topology.checksum_salt = checksum_salt(members, &topology, &objdir, order)?;
 
     Ok(ImportedPool {
         pool_guid,
@@ -156,17 +161,17 @@ fn build_topology<R: BlockRead>(
     vtree: &NvList<'_>,
     members: &mut [PoolMember<R>],
     sha: &mut Sha256,
-) -> Result<Topology> {
+) -> Result<Layout> {
     let vtype = nv_str(vtree, "type")?;
     match vtype {
-        "disk" | "file" => Ok(Topology::Single(0)),
+        "disk" | "file" => Ok(Layout::Single(0)),
         "mirror" => {
             let children = nv_child_guids(vtree)?;
             let mut idx = Vec::with_capacity(children.len());
             for guid in children {
                 idx.push(find_member_by_guid(members, guid, sha)?);
             }
-            Ok(Topology::Mirror(idx))
+            Ok(Layout::Mirror(idx))
         }
         "raidz" => {
             let nparity = nv_u64(vtree, "nparity").unwrap_or(1);
@@ -194,7 +199,7 @@ fn build_topology<R: BlockRead>(
             if present + 1 < idx.len() {
                 return Err(Error::UnsupportedTopology("topo_raidz_degraded"));
             }
-            Ok(Topology::RaidZ1 {
+            Ok(Layout::RaidZ1 {
                 children: idx,
                 ashift,
             })
@@ -315,10 +320,11 @@ fn check_read_feature(guid: &str) -> Result<()> {
 /// Read features this reader handles, or doesn't need to:
 ///
 /// - Formats it reads: lz4 and zstd compression, embedded data, hole birth,
-///   large blocks (up to 16 MiB) and large dnodes.
+///   large blocks (up to 16 MiB), large dnodes and names over 255 bytes
+///   (`longname`, held in fat ZAPs like any other name).
 /// - Pool bookkeeping it never consults: extensible datasets, vdev ZAPs v2,
 ///   the head error log, bookmarks and crash dumps.
-/// - Checksums: SHA-512 is verified. Skein, Edon-R and BLAKE3 are refused
+/// - Checksums: SHA-512 and BLAKE3 are verified. Skein and Edon-R are refused
 ///   block by block with a typed error, so a pool that uses them elsewhere still
 ///   opens.
 /// - Encryption: Every block of an encrypted dataset is refused with the typed
@@ -340,6 +346,7 @@ const READ_FEATURES_UNDERSTOOD: &[&str] = &[
     "com.delphix:bookmark_written",
     "com.delphix:redaction_bookmarks",
     "com.joyent:multi_vdev_crash_dump",
+    "org.zfsonlinux:longname",
     "org.illumos:sha512",
     "org.illumos:skein",
     "org.illumos:edonr",
@@ -350,7 +357,6 @@ const READ_FEATURES_UNDERSTOOD: &[&str] = &[
 /// active read feature is `feat_unknown_read_incompat`.
 const REFUSED_FEATURE_TOKENS: &[&str] = &[
     "raidz_expansion",
-    "longname",
     "device_removal",
     "draid",
     "dynamic_gang_header",
@@ -365,10 +371,10 @@ fn check_mos_features<R: BlockRead>(
     members: &mut [PoolMember<R>],
     topology: &Topology,
     mos: &Dnode,
+    objdir: &Dnode,
     order: EndianOrder,
 ) -> Result<()> {
-    let objdir = read_object_dnode(members, topology, mos, MOS_OBJECT_DIRECTORY, order)?;
-    let Some(obj) = zap_lookup(members, topology, &objdir, "features_for_read", order)? else {
+    let Some(obj) = zap_lookup(members, topology, objdir, "features_for_read", order)? else {
         return Ok(());
     };
     let features = read_object_dnode(members, topology, mos, obj, order)?;
@@ -378,6 +384,31 @@ fn check_mos_features<R: BlockRead>(
         }
     }
     Ok(())
+}
+
+/// The pool's checksum salt: 32 bytes ZFS creates with the pool, which key the
+/// salted checksums (BLAKE3, Skein, Edon-R). Older pools may lack it.
+fn checksum_salt<R: BlockRead>(
+    members: &mut [PoolMember<R>],
+    topology: &Topology,
+    objdir: &Dnode,
+    order: EndianOrder,
+) -> Result<Option<[u8; 32]>> {
+    let Some(bytes) = zap_lookup_bytes(
+        members,
+        topology,
+        objdir,
+        "org.illumos:checksum_salt",
+        order,
+    )?
+    else {
+        return Ok(None);
+    };
+    let salt = <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| Error::Inconsistent {
+        token: "checksum_salt",
+        where_: Location::Mos,
+    })?;
+    Ok(Some(salt))
 }
 
 // --- nvlist helpers (keys are always static literals) --------------------------
@@ -445,6 +476,8 @@ mod tests {
             "com.delphix:head_errlog",
             "org.zfsonlinux:large_dnode",
             "com.datto:encryption",
+            "org.zfsonlinux:longname",
+            "org.openzfs:blake3",
         ] {
             assert_eq!(check_read_feature(guid), Ok(()), "{guid}");
         }
@@ -457,7 +490,6 @@ mod tests {
             other => panic!("{guid}: {other:?}"),
         };
         assert_eq!(token("org.openzfs:raidz_expansion"), "raidz_expansion");
-        assert_eq!(token("org.openzfs:longname"), "longname");
         assert_eq!(token("com.delphix:device_removal"), "device_removal");
         assert_eq!(token("org.openzfs:draid"), "draid");
         assert_eq!(

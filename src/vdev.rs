@@ -35,9 +35,19 @@ const SECTOR_SHIFT: u32 = 9;
 /// shifts (`>> (ashift - 9)`, `>> ashift`) below the 64-bit overflow boundary.
 const ASHIFT_MAX: u8 = 16;
 
-/// The pool's single top-level vdev, expressed as indices into the imported
-/// member set. v0.1 supports a single leaf or a mirror.
-pub(crate) enum Topology {
+/// The pool's single top-level vdev and the pool's checksum salt.
+pub(crate) struct Topology {
+    /// The vdev layout.
+    pub layout: Layout,
+    /// The pool's checksum salt (`org.illumos:checksum_salt` in the MOS object
+    /// directory), which keys the salted checksums such as BLAKE3. `None` until
+    /// the MOS has been read, and in pools that never needed one.
+    pub checksum_salt: Option<[u8; 32]>,
+}
+
+/// The single top-level vdev, expressed as indices into the imported member
+/// set: a single leaf, a mirror or a RAID-Z1.
+pub(crate) enum Layout {
     /// One leaf device (member index).
     Single(usize),
     /// A mirror: every child holds the same data; read any healthy child.
@@ -57,20 +67,20 @@ pub(crate) enum Topology {
 impl Topology {
     /// Every member index in the topology (present members only, for raidz).
     pub(crate) fn members(&self) -> Vec<usize> {
-        match self {
-            Topology::Single(idx) => vec![*idx],
-            Topology::Mirror(children) => children.clone(),
-            Topology::RaidZ1 { children, .. } => children.iter().flatten().copied().collect(),
+        match &self.layout {
+            Layout::Single(idx) => vec![*idx],
+            Layout::Mirror(children) => children.clone(),
+            Layout::RaidZ1 { children, .. } => children.iter().flatten().copied().collect(),
         }
     }
 
     /// Member indices that physically hold a DVA's data, in read-try order
     /// (single + mirror only; raidz takes the dedicated column path).
     fn read_order(&self) -> &[usize] {
-        match self {
-            Topology::Single(idx) => core::slice::from_ref(idx),
-            Topology::Mirror(children) => children,
-            Topology::RaidZ1 { .. } => &[],
+        match &self.layout {
+            Layout::Single(idx) => core::slice::from_ref(idx),
+            Layout::Mirror(children) => children,
+            Layout::RaidZ1 { .. } => &[],
         }
     }
 }
@@ -130,8 +140,9 @@ pub(crate) fn read_block_pointer<R: BlockRead>(
                 }
             }
             // RAID-Z stripes data across columns — a dedicated assembly path.
-            if let Topology::RaidZ1 { children, ashift } = topo {
-                return raidz1_read(members, children, *ashift, r, psize, lsize);
+            let salt = topo.checksum_salt.as_ref();
+            if let Layout::RaidZ1 { children, ashift } = &topo.layout {
+                return raidz1_read(members, children, *ashift, salt, r, psize, lsize);
             }
             let mut last = Error::Inconsistent {
                 token: "bp_no_readable_copy",
@@ -171,6 +182,7 @@ pub(crate) fn read_block_pointer<R: BlockRead>(
                         r.order,
                         &raw,
                         &r.checksum_value,
+                        salt,
                         u64::from(dva.vdev),
                         dva.offset,
                     ) {
@@ -341,6 +353,7 @@ fn raidz1_read<R: BlockRead>(
     members: &mut [PoolMember<R>],
     children: &[Option<usize>],
     ashift: u8,
+    salt: Option<&[u8; 32]>,
     r: &BlockPointerRegular,
     psize: usize,
     lsize: usize,
@@ -365,6 +378,7 @@ fn raidz1_read<R: BlockRead>(
                 r.order,
                 raw,
                 &r.checksum_value,
+                salt,
                 u64::from(dva.vdev),
                 dva.offset,
             )
@@ -415,8 +429,12 @@ mod tests {
 
     #[test]
     fn read_order_single_and_mirror() {
-        assert_eq!(Topology::Single(2).read_order(), &[2]);
-        assert_eq!(Topology::Mirror(vec![1, 3, 5]).read_order(), &[1, 3, 5]);
+        let topo = |layout| Topology {
+            layout,
+            checksum_salt: None,
+        };
+        assert_eq!(topo(Layout::Single(2)).read_order(), &[2]);
+        assert_eq!(topo(Layout::Mirror(vec![1, 3, 5])).read_order(), &[1, 3, 5]);
     }
 
     #[test]

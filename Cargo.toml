@@ -6,7 +6,7 @@
 
 [package]
 name = "lamzfs"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 authors = [
     "Greg Lamberson <greg@lamco.io>",
@@ -39,6 +39,10 @@ miniz_oxide = { version = "0.9", default-features = false, features = ["with-all
 # SHA-512/256 for datasets set to checksum=sha512 (the other algorithms are
 # scalar code vendored from rzfs).
 sha2 = { version = "0.11", default-features = false, optional = true }
+# BLAKE3 for datasets set to checksum=blake3, keyed with the pool's checksum
+# salt. The minimum is the version in Debian sid; `pure` keeps it portable Rust
+# (no C or assembly, which a UEFI target can't build).
+blake3 = { version = "1.8.2", default-features = false, features = ["pure"], optional = true }
 
 [dev-dependencies]
 # Oracle tests: decompress the committed .img.zst fixtures, hash file contents,
@@ -55,7 +59,7 @@ serde_json = "1"
 doctest = false
 
 [features]
-default = ["lz4", "zstd", "gzip", "lzjb", "mirror", "sha512"]
+default = ["lz4", "zstd", "gzip", "lzjb", "mirror", "sha512", "blake3"]
 std = []
 
 # Per-codec gates (SPEC-LAMZFS §10). `off` and `zle` are always compiled.
@@ -66,6 +70,8 @@ lzjb = []
 mirror = []
 # SHA-512/256 checksums (checksum=sha512 datasets).
 sha512 = ["dep:sha2"]
+# BLAKE3 checksums (checksum=blake3 datasets).
+blake3 = ["dep:blake3"]
 
 # NOTE: the vendored rzfs subtree gates SIMD-accelerated checksums behind feature
 # names like `sha256-avx2` / `fletcher4-avx512f`. lamzfs deliberately does NOT

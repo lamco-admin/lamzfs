@@ -55,5 +55,6 @@ Apache-2.0 per their SPDX headers. Microsoft Secure Boot signing accepts MIT; no
 GPL code is linked.
 
 The third-party crates lamzfs depends on at build time (`lz4_flex`, `ruzstd`,
-`miniz_oxide`, and `sha2` for SHA-512) are each permissive (MIT /
-MIT-or-Apache / Zlib) and carry their own notices.
+`miniz_oxide`, `sha2` for SHA-512 and `blake3` for BLAKE3) are each
+permissive (MIT / MIT-or-Apache / Zlib / CC0-or-Apache) and carry their own
+notices.

@@ -236,6 +236,30 @@ fn fat_entries<R: BlockRead>(
     dbsz: usize,
     order: EndianOrder,
 ) -> Result<Vec<(String, u64)>> {
+    Ok(fat_entries_raw(members, topo, zap_dnode, dbsz, order)?
+        .into_iter()
+        .map(|(name, value)| (name, value_as_u64(&value)))
+        .collect())
+}
+
+/// A ZAP integer value, right-aligned into a `u64`. ZAP integer arrays are
+/// stored big-endian; a directory entry or object number is one 8-byte value.
+fn value_as_u64(value: &[u8]) -> u64 {
+    let mut v = [0u8; 8];
+    let n = value.len().min(8);
+    v[8 - n..].copy_from_slice(&value[value.len() - n..]);
+    u64::from_be_bytes(v)
+}
+
+/// Every entry of a fat ZAP with its value's raw bytes (`value_int_size *
+/// value_length` of them, big-endian integers).
+fn fat_entries_raw<R: BlockRead>(
+    members: &mut [PoolMember<R>],
+    topo: &Topology,
+    zap_dnode: &Dnode,
+    dbsz: usize,
+    order: EndianOrder,
+) -> Result<Vec<(String, Vec<u8>)>> {
     let block_shift = dbsz.trailing_zeros();
     let hash_entries = 1usize << (block_shift - 5);
     let chunk_base = ZAP_LEAF_HEADER_SIZE + hash_entries * 2;
@@ -267,7 +291,7 @@ fn collect_leaf(
     chunk_base: usize,
     nchunks: usize,
     order: EndianOrder,
-    out: &mut Vec<(String, u64)>,
+    out: &mut Vec<(String, Vec<u8>)>,
 ) -> Result<()> {
     let bad = || Error::Inconsistent {
         token: "zap_leaf_chunk",
@@ -304,12 +328,7 @@ fn collect_leaf(
             value_len,
             order,
         )?;
-        // ZAP integer values are stored big-endian within the array; right-align
-        // into a u64 (a directory entry is one 8-byte value).
-        let mut v = [0u8; 8];
-        let n = value_bytes.len().min(8);
-        v[8 - n..].copy_from_slice(&value_bytes[value_bytes.len() - n..]);
-        out.push((name, u64::from_be_bytes(v)));
+        out.push((name, value_bytes));
     }
     Ok(())
 }
@@ -349,6 +368,32 @@ fn collect_chunks(
         next = data.next;
     }
     Ok(out)
+}
+
+/// Look up one name in a ZAP and return its value's raw bytes: a micro-ZAP value
+/// as its 8 big-endian bytes, a fat-ZAP value as stored (an array of
+/// big-endian integers, such as the 32 one-byte integers of the pool's
+/// checksum salt).
+pub(crate) fn zap_lookup_bytes<R: BlockRead>(
+    members: &mut [PoolMember<R>],
+    topo: &Topology,
+    zap_dnode: &Dnode,
+    name: &str,
+    order: EndianOrder,
+) -> Result<Option<Vec<u8>>> {
+    let dbsz = (zap_dnode.data_block_size_sectors as usize) << 9;
+    let block0 =
+        read_dnode_block(members, topo, zap_dnode, 0, order)?.ok_or(Error::Inconsistent {
+            token: "zap_empty",
+            where_: Location::Zap { obj: 0 },
+        })?;
+    if dbsz != 0 && block_type(&block0, order) == ZAP_FAT_HEADER {
+        return Ok(fat_entries_raw(members, topo, zap_dnode, dbsz, order)?
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v));
+    }
+    Ok(zap_lookup(members, topo, zap_dnode, name, order)?.map(|v| v.to_be_bytes().to_vec()))
 }
 
 /// Look up one name in a micro-ZAP, returning its `u64` value (an object number).
